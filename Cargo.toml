@@ -1,0 +1,6 @@
+[package]
+name = "pyparser"
+version = "0.1.0"
+authors = ["Techcable <Techcable@techcable.net>"]
+
+[dependencies]
