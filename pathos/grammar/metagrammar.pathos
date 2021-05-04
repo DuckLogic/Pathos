@@ -1,0 +1,81 @@
+/*
+ * My metagrammar.
+ *
+ * It's like EBNF, Antlr, and PEG had a baby.
+ *
+ * See the wikipedia page for EBNF.
+ * Also inspired by the format for Python's grammar:
+ * https://docs.python.org/3/reference/grammar.html
+ *
+ * A couple extra utilities, inspired by the rust macro system:
+ * (IDENT rule)','* matches a list of zero or more (IDENT rule) separated by ','.
+ * (IDENT rule)','+ matches a list of one or more (IDENT rule).
+ *
+ * Specifying either of those two suffixes twice allows for a
+ * optional trailing separator:
+ * tuple: (expression)','++ would match "1, 2, 3," as [1, 2, 3]
+ * tuple: (expression)','+ would forbid the trailing comma.
+ *
+ * Like the python metagrammar, we require type declarations for each rule. These are what the generated parse functions return.
+ */
+
+grammar[Grammar]: rules=(rule)* -> Grammar { rules };
+
+rule[Rule]: name=IDENT result_type=type_decl ':' cases=(rule_case)'|'+ ';' -> Rule { name, result_type, cases };
+
+rule_case[RuleCase]: items=(rule_item)* '->' handler -> RuleCase { items, handler };
+
+rule_item[RuleItem]: name=IDENT -> Simple { rule: name }
+    | name=IDENT '=' rule=match_rule -> Named { rule, name };
+
+match_rule[MatchRule]:
+    | '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
+    | inner_rule=simple_match '?' -> Optional { rule: inner_rule }
+    | negated_rule=negative_match -> Negative { negated_rule }
+    | rule=simple_match -> Simple { rule }
+    | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
+
+simple_match[SimpleMatchRule]: name=IDENT -> NamedRule { name }
+    | text=LITERAL_STRING -> Literal { text }
+    /* Ignore clarifying parentheses */
+    | '(' inner=simple_match ')' -> nospan { inner };
+
+repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { separator }
+    | separator=LITERAL_STRING? '+' -> OneOrMore { separator }
+    | separator=LITERAL_STRING '**' -> ZeroOrMoreTerminated { separator }
+    | separator=LITERAL_STRING '++' -> OneOrMoreTerminated { separator }
+    | '**' -> error { "Repetition with '**' requires a separator" }
+    | '++' -> error { "Repetition with '++' requires a separator"};
+
+/*
+ * NOTE: There's a difference between a lookahead assertion
+ * and a 'negative match'. A negative match like ^('{' | '}')
+ * matches all tokens except '{' and '}'. A lookahead
+ * assertion like !';' fails the case if a ';' is present,
+ * but doesn't consume any tokens.
+ */
+negative_match[NegativeMatch]: '^' literal=LITERAL_STRING -> Literal { literal }
+    | literals=(LITERAL_STRING)'|'* -> LiteralSet { literals };
+
+type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text:  } 
+raw_type[str]: name=IDENT -> { node.text }
+    | '[' inner=raw_type ']' -> { node.text };
+
+handler[Handler]: ignore_span=NOSPAN? code=code_block -> Explicit { code, ignore_span }
+    | variant_name=IDENT '{' attrs=(auto_attribute)','** '}' -> Auto { variant_name, attrs }
+    | ERROR message=code_block -> Error { message };
+
+code_block[CodeBlock]: '{' text=raw_code '}' -> CodeBlock { text };
+raw_code[str]: ^('{' | '}')* { node.text }
+    | '{' inner=raw_code '}' { node.text };}
+
+/*
+ * There are three ways to generate an attribute for an AST node:
+ * Node { plain }
+ * Node { renamed: original }
+ * Node { generaed: { arbitrary_code() } }
+ */
+auto_attribute[Attribute]: name=IDENT -> Named { name }
+    | name=IDENT '=' original=IDENT -> Renamed { name, original: src }
+    | name=IDENT '=' code=code_block -> RawCode { name, code };
+

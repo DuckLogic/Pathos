@@ -14,3 +14,4 @@ Designed for fast and straightforward parsing.
    - Automatically generates code for all `LL(k)` rule
    - TODO: [Pratt parsing](http://craftinginterpreters.com/compiling-expressions.html#a-pratt-parser)
 - Readable generated code, designed for editing by the user
+- Auto-generates typed AST
