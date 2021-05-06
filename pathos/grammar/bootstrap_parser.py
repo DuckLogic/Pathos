@@ -4,6 +4,8 @@ from metaclass import ABCMeta
 from typing import Optional
 from dataclasses import dataclass
 
+from pathos.runtime import Parser, Ident
+
 @dataclass
 class Grammar:
     rules: list[Rule]
@@ -18,7 +20,7 @@ class Rule:
     cases: list[RuleCase]
 
 def rule(parser) -> Rule:
-    name = parser.expect(IDENT)
+    name = parser.expect(Ident)
     result_type = parser.expect(type_decl)
     parser.expect(':')
     cases = parser.parse_repeated(min=1, separator='|')
@@ -45,7 +47,7 @@ class NamedRuleItem(RuleItem):
 
 def rule_item(parser) -> RuleItem:
     # NOTE: Both cases start with IDENT
-    name = parser.expect(IDENT)
+    name = parser.expect(Ident)
     if name.peek() == "=":
         name.expect("=")
         rule = match_rule()
@@ -56,28 +58,61 @@ def rule_item(parser) -> RuleItem:
 @dataclass
 class MatchRule(metaclass=ABCMeta):
     @classmethod
-    @abstractmethod
     def parse(cls, parser) -> tuple[Optional[MatchRule], Optional[int]]:
-        pass
+        raise NotImplementedError
+
+@dataclass
+class NegatedMatchRule(MatchRule):
+    literals: frozenset[LiteralString]
+
+    @classmethod
+    def parse(cls, parser):
+        parser.expect('^')
+        literals: frozenset
+        if parser.peek() == "(":
+            parser.expect("(")
+            literals = parser.parse_repeated(LiteralString, minimum=1, separator=",")
+            parser.expect(")")
+        elif instanceof(parser.peek(), LiteralString):
+            literals = frozenset((parser.expect(LiteralString),))
+        else:
+            raise parser.unexpected_token()
+        return NegatedMatchRule(literals=literals)
+
 
 @dataclass
 class RepeatedMatchRule(MatchRule):
     repeated_rule: SimpleMatch
     repetition_type: Repetition
 
+    @classmethod
+    def parse(cls, parser):
+        parser.expect('(')
+        repeated_rule = parser.expect(simple_match)
+        parser.expect(')')
+        repetition = parser.expect(repetition_type)
+        return RepeatedMatchRule(repeated_rule, repetition_type=repetition)
+
 @dataclass
 class OptionalMatchRule(MatchRule):
-    optionally_matched: MatchRule
+    inner_rule: MatchRule
 
 @dataclass
 class NegativeAssertionMatchRule(MatchRule):
-    literal: str
+    literal: LiteralString
 
     @classmethod
-    def parse(parser):
-        parser.expect() 
+    def parse(cls, parser):
+        parser.expect('!')
+        literal = parser.expect(LiteralString)
+        return NegativeAssertionMatchRule(literal=literal)
 
-def match_rule(parser):
+MATCH_RULE_TABLE = {
+    '(': RepeatedMatchRule.parse,
+    '^': NegatedMatchRule.parse,
+    '!': NegativeAssertionMatchRule.parse
+}
+def match_rule(parser) -> MatchRule:
     # match_rule[MatchRule]
     #     | '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
     #     | inner_rule=simple_match '?' -> Optional { rule: inner_rule }
@@ -85,74 +120,183 @@ def match_rule(parser):
     #     
     #     | rule=simple_match -> Simple { rule }
     #     | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
-    if parser.peek() == "(":
-        # NOTE: This conflicts with multiple rules
-        # In theory, it could be either ('(', repeated_rule),
-        # or a simple_match for an optional or simple
-        #
-        # In practice, we don't care and are happy to ignore the
-        # inner paranthesized 'simple_match'
-        parser.expect('(')
-        inner = simple_match()
-        parser.expect(')')
-        repetition = parser.attempt_parse(repetition_type)
-        if repetition is not None:
-            return RepeatedMatchRule(repetition_type=repetition, repeated_rule=inner)
-        else:
-            if parserr
-
-    prediction = MATCH_RULE_PREDICTION_TABLE.get(parser.peek())
-    if prediction is not None:
-        return prediction(parser)
+    parse_func = MATCH_RULE_TABLE.get(parser.peek())
+    if parse_func is not None:
+        return parse_func(parser)
     else:
-        # parse as an simple match
-        inner_rule=simple_match()
-        if parser.peek()
+        # Must start with 'simple_match'
+        inner_rule = simple_match(parser)
+        if parser.peek() == "?":
+            return OptionalMatchRule(inner_rule=inner_rule)
+        else:
+            return inner_rule
 
+class NamedRule(MatchRule):
+    name: Ident
 
+class LiteralRule(MatchRule):
+    literal_text: LiteralString
 
+def simple_match(parser) -> MatchRule:
+    if isinstance(parser.peek(), Ident):
+        return NamedRule(name=parser.expect(Ident))
+    elif isinstance(parser.peek(), LiteralString):
+        return NamedRule(literal_text=parser.expect(LiteralString))
+    else:
+        raise parser.unexpected_token()
 
-simple_match[SimpleMatchRule]: name=IDENT -> NamedRule { name }
-    | text=LITERAL_STRING -> Literal { text }
-    /* Ignore clarifying parentheses */
-    | '(' inner=simple_match ')' -> nospan { inner };
+@dataclass
+class RepetitionType:
+    seperator: Optional[str] = None
+    minimum: int = 0
+    allow_extra_terminator: bool = False
 
-repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { separator }
-    | separator=LITERAL_STRING? '+' -> OneOrMore { separator }
-    | separator=LITERAL_STRING '**' -> ZeroOrMoreTerminated { separator }
-    | separator=LITERAL_STRING '++' -> OneOrMoreTerminated { separator }
-    | '**' -> error { "Repetition with '**' requires a separator" }
-    | '++' -> error { "Repetition with '++' requires a separator"};
+REPETITION_MARKERS: dict[str, int] = {
+    '*': 0, '+': 1, '**': 0, '++': 1
+}
+def repetition_type(parser) -> RepetitionType:
+    marker_str 
+    seperator = None
+    if isinstance(parser.peek(), LiteralString):
+        seperator = parser.expect(LiteralString)
+    repetition_str = parser.peek()
+    try:
+        minimum = REPETITION_MARKERS[repetition_str]
+    except KeyError:
+        raise parser.unexpected_token()
+    else:
+        parser.expect(repetition_str) # consume
+    return RepetitionType(
+        seperator=separator, minimum=minimum,
+        allow_extra_terminator=len(repetition_str) == 2
+    )
 
-/*
- * NOTE: There's a difference between a lookahead assertion
- * and a 'negative match'. A negative match like ^('{' | '}')
- * matches all tokens except '{' and '}'. A lookahead
- * assertion like !';' fails the case if a ';' is present,
- * but doesn't consume any tokens.
- */
-negative_match[NegativeMatch]: '^' literal=LITERAL_STRING -> Literal { literal }
-    | literals=(LITERAL_STRING)'|'* -> LiteralSet { literals };
+@dataclass
+class TypeDecl:
+    text: str
 
-type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text:  } 
-raw_type[str]: name=IDENT -> { node.text }
-    | '[' inner=raw_type ']' -> { node.text };
+def type_decl(parser):
+    parser.expect('[')
+    def raw_type_decl(parser) -> str:
+        if isinstance(parser.peek(), Ident):
+            return str(parser.expect(Ident))
+        elif parser.peek() == '[':
+            parser.expect('[')
+            inner = raw_type_decl(parser)
+            parser.expect(']')
+            return f"[{inner}]"
+        else:
+            raise parser.unexpected_token()
+    text=raw_type_decl(parser)
+    parser.expect(']')
+    return TypeDecl(text=text)
 
-handler[Handler]: ignore_span=NOSPAN? code=code_block -> Explicit { code, ignore_span }
-    | variant_name=IDENT '{' attrs=(auto_attribute)','** '}' -> Auto { variant_name, attrs }
-    | ERROR message=code_block -> Error { message };
+class Handler(metaclass=ABCMeta):
+    @classmethod
+    @abstractmethod
+    def parse(cls, parser):
+        pass
 
-code_block[CodeBlock]: '{' text=raw_code '}' -> CodeBlock { text };
-raw_code[str]: ^('{' | '}')* { node.text }
-    | '{' inner=raw_code '}' { node.text };}
+class ExplicitHandler(Handler):
+    code: CodeBlock
+    ignore_span: bool = False
 
-/*
- * There are three ways to generate an attribute for an AST node:
- * Node { plain }
- * Node { renamed: original }
- * Node { generaed: { arbitrary_code() } }
- */
-auto_attribute[Attribute]: name=IDENT -> Named { name }
-    | name=IDENT '=' original=IDENT -> Renamed { name, original: src }
-    | name=IDENT '=' code=code_block -> RawCode { name, code };
+    @classmethod
+    def parse(cls, parser):
+        if pasrer.peek() == "nospan":
+            parser.expect("nospan")
+            ignore_span = True
+        else:
+            ignore_span = False
+        code = code_block(parser)
+        return ExplicitHandler(code=code, ignore_span=ignore_span)
 
+class AutoHandler(Handler):
+    variant_name: Ident
+    attrs: list[AutoAttribute]
+
+    @classmethod
+    def parse(cls, parser):
+        variant_name = parser.expect(Ident)
+        parser.expect('{')
+        attrs = parser.parse_repeated(
+            auto_attribute, seperator=',',
+            allow_extra_terminator=True
+        )
+        parser.expect('}')
+        return AutoHandler(variant_name, attrs)
+
+class ErrorHandler(Handler):
+    message: CodeBlock
+
+    @classmethod
+    def parse(cls, parser):
+        parser.expect("error")
+        message = code_block(parser)
+        return ErrorHandler(message)
+
+HANDLER_PARSE_TABLE = {
+    "nospan": ExplicitHandler.parse,
+    '{': ExplicitHandler.parse,
+    Ident: AutoHandler.parse,
+    "error": ErrorHandler.parse
+}
+def handler(parser) -> Handler:
+    parse_func = parser.predict(HANDLER_PARSE_TABLE)
+    if parse_func is None:
+        raise parser.unexpected_token()
+    return parse_func(parser)
+
+@dataclass
+class CodeBlock:
+    text: str
+
+def code_block(parser) -> CodeBlock:
+    def raw_code(parser) -> str:
+        result = []
+        while (token := parser.peek()) not in ("{", "}"):
+            parser.expect(token)
+            if isinstance(token, str):
+                result.append(token)
+            else:
+                result.append(token.text)
+        if result:
+            return ''.join(result)
+        else:
+            if parser.peek() == "{":
+                parser.expect("{")
+                inner = raw_code(parser)
+                parser.expect("}")
+                return f"{{{inner}}}"
+            else:
+                raise parser.unexpected_token()
+    parser.expect('{')
+    inner = raw_code(parser)
+    parser.parse('}')
+    return CodeBlock(text=inner)
+
+class AutoAttribute(metaclass=ABCMeta):
+    name: str
+
+class NamedAutoAttribute(AutoAttribute):
+    pass
+
+class RenamedAutoAttribute(AutoAttribute):
+    original: Ident
+
+class RawCodeAutoAttribute(AutoAttribute):
+    code: CodeBlock
+
+def auto_attribute(parser) -> AutoAttribute:
+    name = parser.expect(Ident)
+    if parser.peek() != "=":
+        return NamedAutoAttribute(name=name)
+    parser.expect('=')
+    if isinstance(parser.peek(), Ident):
+        original = parser.expect(Ident)
+        return AutoAttribute(name=name, original=original)
+    elif parser.peek() == "{":
+        code = code_block(parser)
+        return RawCodeAutoAttribute(name=name, code=code)
+    else:
+        raise parser.unexpected_token()

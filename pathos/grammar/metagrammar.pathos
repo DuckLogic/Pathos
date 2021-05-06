@@ -36,9 +36,7 @@ match_rule[MatchRule]:
     | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
 
 simple_match[SimpleMatchRule]: name=IDENT -> NamedRule { name }
-    | text=LITERAL_STRING -> Literal { text }
-    /* Ignore clarifying parentheses */
-    | '(' inner=simple_match ')' -> nospan { inner };
+    | text=LITERAL_STRING -> Literal { text };
 
 repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { separator }
     | separator=LITERAL_STRING? '+' -> OneOrMore { separator }
@@ -55,19 +53,20 @@ repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { s
  * but doesn't consume any tokens.
  */
 negative_match[NegativeMatch]: '^' literal=LITERAL_STRING -> Literal { literal }
-    | literals=(LITERAL_STRING)'|'* -> LiteralSet { literals };
+    | '^' literals=(LITERAL_STRING)'|'* -> LiteralSet { literals };
 
-type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text:  } 
+type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text } 
 raw_type[str]: name=IDENT -> { node.text }
     | '[' inner=raw_type ']' -> { node.text };
 
-handler[Handler]: ignore_span=NOSPAN? code=code_block -> Explicit { code, ignore_span }
+handler[Handler]: ignore_span="nospan"? code=code_block -> Explicit { code, ignore_span: { ignore_span is not None } }
     | variant_name=IDENT '{' attrs=(auto_attribute)','** '}' -> Auto { variant_name, attrs }
     | ERROR message=code_block -> Error { message };
 
 code_block[CodeBlock]: '{' text=raw_code '}' -> CodeBlock { text };
-raw_code[str]: ^('{' | '}')* { node.text }
-    | '{' inner=raw_code '}' { node.text };}
+raw_code[str]: ^('{' | '}')* -> { node.text }
+    | '{' inner=raw_code '}' -> { node.text }
+    | '}' -> error { "Unexpected trailing '}'" }
 
 /*
  * There are three ways to generate an attribute for an AST node:
