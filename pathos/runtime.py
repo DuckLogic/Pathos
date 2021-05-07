@@ -1,20 +1,21 @@
 """Runtime support for generated parsers"""
+from __future__ import annotations
+
 import bisect
 from dataclasses import dataclass
-from typing import Union, TypeVar, Callable, TypeAlias
-
+from typing import Union, TypeVar, Callable
 
 
 class Token:
     """A simple token type"""
-    __slots__ = "start", "text"
-    start: int
+    __slots__ = "span", "text"
+    span: Span
     """The starting position (in chars)"""
     text: str
     """The text of the token"""
 
-    def __init__(self, start: int, text: str):
-        self.start = start
+    def __init__(self, span: Span, text: str):
+        self.span = span
         self.text = text
 
     def __eq__(self, other):
@@ -29,10 +30,8 @@ class Token:
     def __str__(self) -> str:
         return self.text
 
-    @property
-    def span(self) -> Span:
-        start = self.start
-        return Span(start, start + len(self.text))
+    def __repr__(self) -> str:
+        return f"{self.text!r} @ {self.span}"
 
 class Ident(Token):
     pass
@@ -40,9 +39,9 @@ class Ident(Token):
 @dataclass
 class Span:
     __slots__ = "start", "end"
-    start: Union[int, Location]
+    start: Location
     """The start location"""
-    end: Union[int, Location, None]
+    end: Optional[Location]
     """The end location (optional)
 
     If this is none, then this span only points at a single location"""
@@ -53,6 +52,17 @@ class Span:
         location objects under the hood (instead of raw bytes)"""
         return isinstance(self.start, Location) and (
             self.end is None or isinstance(self.end, Location))
+
+    def __repr__(self) -> str:
+        start, end = self.start, self.end
+        if end is not None and start != end:
+            if start.line != end.line:
+                return f"{start}..{end}"
+            else:
+                return f"{start.line}:{start.char_offset}..{end.char_offset}"
+        else:
+            return repr(start)
+
 
 @dataclass(frozen=True)
 class Location:
@@ -69,18 +79,15 @@ class LocationTracker:
         index = 0
         while (index := text.find('\n', index)) >= 0:
             self._line_starts.append(index + 1)
+            index += 1
 
-    def resolve_span(self, target: Span) -> Span:
-        """Resolve the specified span in-place"""
-        if isinstance(target.start, Location):
-            pass
-        else:
-            target.start = self.resolve_span(target.start)
-        if target.end is None or isinstance(target.end, Location):
-            pass
-        else:
-            target.end = self.resolve_span(target.end)
-        return target
+    def create_span(self, start: int, end: Optional[int]) -> Span:
+        """Create a resolved span"""
+        return Span(
+            start=self.resolve_location(start),
+            end=self.resolve_location(end) \
+                if end is not None else None,
+        )
 
     def resolve_location(self, char_index: int) -> Location:
         assert isinstance(char_index, int)
@@ -96,23 +103,18 @@ class LocationTracker:
             char_offset=char_index-line_start
         )
 
-T = TypeVar("T")
-ParseFunc = Union[str, type[Token], Callable[Parser, T]]
-
 class ParseError(BaseException):
     span: Span
     def __init__(self, span: Span, msg: str):
-        super().__init__(msg)
+        super().__init__(f"{msg} @ {span}")
         self.span = span
+
 
 class UnexpectedTokenError(ParseError):
     pass
 
 class UnexpectedEnd(ParseError):
     pass
-
-T = TypeVar("T")
-PredictionTable: TypeAlias = dict[Union[str, type], Callable[Parser, T]]
 
 class Parser:
     __slots__ = "tokens", "_current_index"
@@ -123,9 +125,10 @@ class Parser:
         self.tokens = tokens
         self._current_index = 0
 
-    def peek(self) -> Optional[Token]:
+    def peek(self, *, ahead: int = 0) -> Optional[Token]:
+        assert ahead >= 0
         try:
-            return self.tokens[self._current_index]
+            return self.tokens[self._current_index + ahead]
         except IndexError:
             return None
 
@@ -184,14 +187,16 @@ class Parser:
         return result
 
     def expect(self, parse_func: ParseFunc):
-        if isinstance(parse_func, str):
+        if isinstance(parse_func, (str, Token)):
             if self.peek() == parse_func:
                 self._current_index += 1
+                return parse_func # String
             else:
                 raise self.unexpected_token()
         elif isinstance(parse_func, type):
             token = self.peek()
             if isinstance(token, parse_func):
+                self._current_index += 1
                 return token
             else:
                 raise UnexpectedTokenError(
@@ -211,3 +216,6 @@ class Parser:
                 start=self.tokens[-1].span.end,
             ), "Unexpected EOF")
 
+
+T = TypeVar("T")
+ParseFunc = Union[str, type[Token], Callable[Parser, T]]

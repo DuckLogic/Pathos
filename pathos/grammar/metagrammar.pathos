@@ -25,18 +25,18 @@ rule[Rule]: name=IDENT result_type=type_decl ':' cases=(rule_case)'|'+ ';' -> Ru
 
 rule_case[RuleCase]: items=(rule_item)* '->' handler -> RuleCase { items, handler };
 
-rule_item[RuleItem]: name=IDENT -> Simple { rule: name }
+rule_item[RuleItem]: rule=match_rule -> Simple { rule: name }
     | name=IDENT '=' rule=match_rule -> Named { rule, name };
 
-match_rule[MatchRule]:
-    | '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
+match_rule[MatchRule]: '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
     | inner_rule=simple_match '?' -> Optional { rule: inner_rule }
     | negated_rule=negative_match -> Negative { negated_rule }
     | rule=simple_match -> Simple { rule }
     | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
 
 simple_match[SimpleMatchRule]: name=IDENT -> NamedRule { name }
-    | text=LITERAL_STRING -> Literal { text };
+    | text=LITERAL_STRING -> Literal { text }
+    | first=LITERAL_STRING '|' others=(LITERAL_STRING)'|'+ -> { raise NotImplementedError };
 
 repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { separator }
     | separator=LITERAL_STRING? '+' -> OneOrMore { separator }
@@ -55,13 +55,13 @@ repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { s
 negative_match[NegativeMatch]: '^' literal=LITERAL_STRING -> Literal { literal }
     | '^' literals=(LITERAL_STRING)'|'* -> LiteralSet { literals };
 
-type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text } 
+type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text };
 raw_type[str]: name=IDENT -> { node.text }
     | '[' inner=raw_type ']' -> { node.text };
 
 handler[Handler]: ignore_span="nospan"? code=code_block -> Explicit { code, ignore_span: { ignore_span is not None } }
     | variant_name=IDENT '{' attrs=(auto_attribute)','** '}' -> Auto { variant_name, attrs }
-    | ERROR message=code_block -> Error { message };
+    | "error" message=code_block -> Error { message };
 
 code_block[CodeBlock]: '{' text=raw_code '}' -> CodeBlock { text };
 raw_code[str]: ^('{' | '}')* -> { node.text }
