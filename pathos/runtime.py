@@ -69,6 +69,9 @@ class Location:
     line: int
     char_offset: int
 
+    def __repr__(self):
+        return f"{self.line}:{self.char_offset}"
+
 class LocationTracker:
     text: str
     _line_starts: list[int]

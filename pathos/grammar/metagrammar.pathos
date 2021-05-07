@@ -64,9 +64,12 @@ handler[Handler]: ignore_span="nospan"? code=code_block -> Explicit { code, igno
     | "error" message=code_block -> Error { message };
 
 code_block[CodeBlock]: '{' text=raw_code '}' -> CodeBlock { text };
-raw_code[str]: ^('{' | '}')* -> { node.text }
+raw_code[str]: (raw_code_part)* -> { node.text }
     | '{' inner=raw_code '}' -> { node.text }
-    | '}' -> error { "Unexpected trailing '}'" }
+    | '}' -> error { "Unexpected trailing '}'" };
+raw_code_part[str]: IDENT -> { node.text }
+    | LITERAL_STRING -> { node.text }
+    | ('=' | '(' | ')' | '.') -> { node.text };
 
 /*
  * There are three ways to generate an attribute for an AST node:

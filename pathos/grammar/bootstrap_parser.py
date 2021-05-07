@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import sys
 from abc import ABCMeta, abstractmethod
 from typing import Optional
 from dataclasses import dataclass
 
 from pathos.runtime import Parser, Ident
-from .lexer import LiteralString
+from .lexer import tokenize, LiteralString
 
 @dataclass
 class Grammar:
@@ -15,7 +16,7 @@ def grammar(parser) -> Grammar:
     result = []
     while parser.peek() is not None:
         result.append(rule(parser))
-    return Grammar(rules=rules)
+    return Grammar(rules=result)
 
 @dataclass
 class Rule:
@@ -38,7 +39,6 @@ class RuleCase:
 
 def rule_case(parser):
     items = parser.parse_repeated(rule_item)
-    print(items)
     parser.expect('->')
     return RuleCase(items, handler=parser.expect(handler))
 
@@ -152,7 +152,7 @@ def simple_match(parser) -> MatchRule:
     elif isinstance(parser.peek(), LiteralString):
         first = parser.expect(LiteralString)
         if parser.peek() == "|":
-            parser.peek('|')
+            parser.expect('|')
             others = parser.parse_repeated(LiteralString, minimum=1, seperator='|')
             return LiteralRule([first, *others])
         else:
@@ -320,3 +320,18 @@ def auto_attribute(parser) -> AutoAttribute:
         return RawCodeAutoAttribute(name=name, code=code)
     else:
         raise parser.unexpected_token()
+
+if __name__ == "__main__":
+    try:
+        input_file = sys.argv[1]
+    except:
+        print("Please specify file", file=sys.stderr)
+        sys.exit(1)
+    with open(input_file) as f:
+        tokens = tokenize(f.read())
+    parser = Parser(tokens)
+    result = grammar(parser)
+    print("Parsed as:")
+    from .printer import Printer
+    printer = Printer(indent_level=1)
+    printer.pretty_print(result, name="result_grammar")
