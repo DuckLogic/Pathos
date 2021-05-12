@@ -2,5 +2,10 @@
 name = "pathos"
 version = "0.1.0"
 authors = ["Techcable <Techcable@techcable.net>"]
+edition = "2018"
 
 [dependencies]
+logos = "0.12"
+memchr = "2.4"
+ahash = "0.7"
+unicode-xid = "0.2.2"
