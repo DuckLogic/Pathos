@@ -163,6 +163,8 @@ class AnalysedItem(metaclass=ABCMeta):
         _num_ids += 1
         return f"n{self.id}"
 
+    def gen_code(self, out: ):
+
     @abstractmethod
     def print_graph(self) -> Iterator[str]:
         yield from ()
