@@ -28,6 +28,15 @@ IDENTIFIER_CONTINUE_CHARS = frozenset((
     *map(chr, range(ord('0'), ord('9')+1))
 ))
 
+def is_valid_ident(s: str) -> bool:
+    if not s:
+        return False
+    valid_start, valid_continue = IDENTIFIER_START_CHARS, \
+        IDENTIFIER_CONTINUE_CHARS
+    return s[0] in valid_start and \
+        all(map(valid_continue.__contains__, s[1:]))
+
+
 class LexError(ParseError):
     pass
 

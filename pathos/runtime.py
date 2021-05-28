@@ -5,6 +5,18 @@ import bisect
 from dataclasses import dataclass
 from typing import Union, TypeVar, Callable
 
+__all__ = (
+    "Token",
+    "Ident",
+    "Span",
+    "Location",
+    "LocationTracker",
+    "ParseError",
+    "UnexpectedTokenError",
+    "UnexpectedEnd",
+    "Parser",
+    "ParseFunc"
+)
 
 class Token:
     """A simple token type"""
@@ -34,7 +46,8 @@ class Token:
         return f"{self.text!r} @ {self.span}"
 
 class Ident(Token):
-    pass
+    def __hash__(self):
+        return hash(self.text)
 
 @dataclass
 class Span:

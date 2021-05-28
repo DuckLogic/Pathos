@@ -57,6 +57,7 @@ negative_match[NegativeMatch]: '^' literal=LITERAL_STRING -> Literal { literal }
 
 type_decl[TypeDecl]: '[' text=raw_type ']' -> TypeDecl { text };
 raw_type[str]: name=IDENT -> { node.text }
+    | name=IDENT ',' next=raw_type -> { node.text }
     | '[' inner=raw_type ']' -> { node.text };
 
 handler[Handler]: ignore_span="nospan"? code=code_block -> Explicit { code, ignore_span: { ignore_span is not None } }

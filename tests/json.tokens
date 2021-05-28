@@ -1,0 +1,11 @@
+"true"
+"false"
+"null"
+"["
+"]"
+"{"
+"}"
+":"
+","
+STRING_LITERAL
+NUMBER_LITERAL

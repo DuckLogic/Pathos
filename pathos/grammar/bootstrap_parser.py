@@ -20,7 +20,7 @@ def grammar(parser) -> Grammar:
 
 @dataclass
 class Rule:
-    name: list[Ident]
+    name: Ident
     result_type: TypeDecl
     cases: list[RuleCase]
 
@@ -87,7 +87,7 @@ class NegatedMatchRule(MatchRule):
 
 @dataclass
 class RepeatedMatchRule(MatchRule):
-    repeated_rule: SimpleMatch
+    repeated_rule: MatchRule
     repetition_type: Repetition
 
     @classmethod
@@ -162,9 +162,29 @@ def simple_match(parser) -> MatchRule:
 
 @dataclass
 class RepetitionType:
-    seperator: Optional[str] = None
+    seperator: Optional[LiteralString] = None
     minimum: int = 0
     allow_extra_terminator: bool = False
+
+    @property
+    def char(self) -> str:
+        if self.minimum == 0:
+            res = "*"
+        elif self.minimum == 1:
+            res = "+"
+        else:
+            return repr(self)
+        if self.allow_extra_terminator:
+            res = res * 2
+        return res
+
+    def __str__(self):
+        res = self.char
+        if self.seperator is not None:
+            return f"{self.seperator.value!r}{res}"
+        else:
+            return res
+
 
 REPETITION_MARKERS: dict[str, int] = {
     '*': 0, '+': 1, '**': 0, '++': 1
@@ -192,15 +212,18 @@ class TypeDecl:
 def type_decl(parser):
     parser.expect('[')
     def raw_type_decl(parser) -> str:
-        if isinstance(parser.peek(), Ident):
-            return str(parser.expect(Ident))
-        elif parser.peek() == '[':
+        res = str(parser.expect(Ident))
+        if parser.peek() == '[':
             parser.expect('[')
-            inner = raw_type_decl(parser)
+            res += '['
+            res += raw_type_decl(parser)
+            while parser.peek() == ",":
+                parser.expect(",")
+                res += ','
+                res += raw_type_decl(parser)
             parser.expect(']')
-            return f"[{inner}]"
-        else:
-            raise parser.unexpected_token()
+            res += ']'
+        return res
     text=raw_type_decl(parser)
     parser.expect(']')
     return TypeDecl(text=text)
@@ -321,7 +344,7 @@ def auto_attribute(parser) -> AutoAttribute:
     else:
         raise parser.unexpected_token()
 
-if __name__ == "__main__":
+def cmd_parse():
     try:
         input_file = sys.argv[1]
     except:
@@ -330,7 +353,10 @@ if __name__ == "__main__":
     with open(input_file) as f:
         tokens = tokenize(f.read())
     parser = Parser(tokens)
-    result = grammar(parser)
+    return grammar(parser)
+
+if __name__ == "__main__":
+    result = cmd_parse()
     print("Parsed as:")
     from .printer import Printer
     printer = Printer(indent_level=1)
