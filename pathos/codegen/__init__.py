@@ -1,7 +1,6 @@
 from abc import ABCMeta, abstractmethod
 from contextlib import contextmanager, AbstractContextManager
 
-
 class CodeWriter(metaclass=ABCMeta):
     indent_size: int
     def __init__(self, *, indent_size=4):
@@ -42,13 +41,23 @@ class CodeWriter(metaclass=ABCMeta):
             self._pending_line.append(end)
 
 
-
 CodeWriterCtx = AbstractContextManager[CodeWriter]
 
+@dataclass
+class Arg:
+    name: str
+    static_type: Optional[str] = None
+
 class CodeGenerator(metaclass=ABCMeta):
+    writer: CodeWriter
+    def __init__(self, writer: CodeWriter):
+        assert isinstance(writer, CodeWriter)
+        self.writer = writer
+
     @abstractmethod
     def declare_method(
-        self, args: list[str],
+        self, name: str, *,
+        args: list[Arg],
         return_type: str
     ) -> CodeWriterCtx:
         pass

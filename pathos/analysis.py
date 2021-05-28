@@ -14,7 +14,7 @@ from .utils import pairwise_longest, gv_escape
 class TokenType:
     name: str
 
-    def __eq__(self):
+    def __eq__(self, other):
         if type(other) is TokenType:
             return self.name == other.name
         else:
@@ -159,11 +159,10 @@ class AnalysedItem(metaclass=ABCMeta):
         global _num_ids
         if (name := self.name) is not None:
             return name
-        self.id = _num_ids
-        _num_ids += 1
-        return f"n{self.id}"
-
-    def gen_code(self, out: ):
+        if not hasattr(self, '_id'):
+            self._id = _num_ids
+            _num_ids += 1
+        return f"n{self._id}"
 
     @abstractmethod
     def print_graph(self) -> Iterator[str]:
@@ -431,37 +430,54 @@ class AnalysedGrammar:
         else:
             raise TypeError(f"Unexpected item type {type(item).__name__!r}: {item!r}")
 
+def collect_token_types(target: parser.Grammar) -> list[TokenType]:
+    import dataclasses
+    known_token_types = set()
+    VISIT_MAP = {
+        parser.NamedRuleItem: lambda v: visit(v.rule),
+        str: None,
+        int: None,
+        float: None,
+        bool: None,
+        tuple: lambda t: [visit(item) for item in t],
+        list: lambda l: [visit(item) for item in l],
+        parser.LiteralString: lambda t: known_token_types
+            .add(TokenType("LITERAL_STRING")),
+        parser.Ident: lambda t: known_token_types
+            .add(TokenType("IDENT")),
+        parser.LiteralRule: lambda l: known_token_types.update(
+            LiteralTokenType(lit.value) for lit in l.literals
+        ),
+        parser.NamedRule: lambda t: known_token_types.add(TokenType(str(t.name)))
+    }
+    def visit(target):
+        try:
+            visit_func = VISIT_MAP[type(target)]
+        except KeyError:
+            pass
+        else:
+            if visit_func is None:
+                return # Intentionally ignore
+            else:
+                visit_func(target)
+                return
+        if dataclasses.is_dataclass(target):
+            for val in dataclasses.astuple(target):
+                visit(val)
+        elif isinstance(item, parser.MatchRule):
+            raise TypeError(f"Expected a dataclass: {target!r}")
+        else:
+            raise TypeError(f"Unknown type {type(target)}: {target!r}")
+    for rule in target.rules:
+        for case in rule.cases:
+            for item in case.items:
+               visit(item)
+    return list(known_token_types)
+
+
 if __name__ == "__main__":
     grammar = parser.cmd_parse()
-    try:
-        token_types = []
-        with open(sys.argv[2]) as token_file:
-            from .grammar.lexer import is_valid_ident
-            import ast
-            for line_index, line in enumerate(token_file):
-                line = line.strip()
-                if is_valid_ident(line):
-                    # Parse as ident
-                    token_types.append(TokenType(name=line))
-                    continue
-                else:
-                    try:
-                        literal = ast.literal_eval(line)
-                        if isinstance(literal, str):
-                            token_types.append(LiteralTokenType(literal))
-                            continue
-                        else:
-                            raise SyntaxError(f"Unexpected literal type {literal!r}")
-                    except SyntaxError as e:
-                        print(f"Syntax error parsing line #{line_index + 1}:", e, file=sys.stderr)
-                        sys.exit(1)
-                token_types.append(literal)
-    except IOError:
-        print("Unable to parse token file (second arg)", file=sys.stderr)
-        sys.exit(1)
-    except IndexError:
-        print("Please specify two args: <grammar file> <token file>", file=sys.stderr)
-        sys.exit(1)
+    token_types = collect_token_types(grammar)
     analysed = AnalysedGrammar(grammar, token_types=token_types)
     print("Analyzing grammar...", file=sys.stderr)
     analysed.analyse()
