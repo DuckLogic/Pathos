@@ -90,14 +90,6 @@ class RepeatedMatchRule(MatchRule):
     repeated_rule: MatchRule
     repetition_type: Repetition
 
-    @classmethod
-    def parse(cls, parser):
-        parser.expect('(')
-        repeated_rule = parser.expect(simple_match)
-        parser.expect(')')
-        repetition = parser.expect(repetition_type)
-        return RepeatedMatchRule(repeated_rule, repetition_type=repetition)
-
 @dataclass
 class OptionalMatchRule(MatchRule):
     inner_rule: MatchRule
@@ -112,28 +104,49 @@ class NegativeAssertionMatchRule(MatchRule):
         literal = parser.expect(LiteralString)
         return NegativeAssertionMatchRule(literal=literal)
 
+
+@dataclass
+class LookaheadAssertionMatchRule(MatchRule):
+    assertion: MatchRule
+
+    @classmethod
+    def parse(cls, parser):
+        parser.expect('&')
+        assertion = simple_match(parser)
+        return LookaheadAssertionMatchRule(assertion=assertion)
+
+
 MATCH_RULE_TABLE = {
-    '(': RepeatedMatchRule.parse,
     '^': NegatedMatchRule.parse,
-    '!': NegativeAssertionMatchRule.parse
+    '!': NegativeAssertionMatchRule.parse,
+    '&': LookaheadAssertionMatchRule.parse
 }
 def match_rule(parser) -> MatchRule:
     # match_rule[MatchRule]
-    #     | '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
+    #     | repeated_rule=simple_match repetition_type -> Repeated { repeated_rule, repetition_type }
     #     | inner_rule=simple_match '?' -> Optional { rule: inner_rule }
     #     | negated_rule=negative_match -> Negative { negated_rule }
-    #     
     #     | rule=simple_match -> Simple { rule }
     #     | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
+    #     | '&' assertion=simple_match -> LookaheadAssertion { literal };
     parse_func = MATCH_RULE_TABLE.get(str(parser.peek()))
     if parse_func is not None:
         return parse_func(parser)
     else:
+        possibly_repetition = parser.peek() == "("
         # Must start with 'simple_match'
         inner_rule = simple_match(parser)
         if parser.peek() == "?":
             parser.expect('?')
             return OptionalMatchRule(inner_rule=inner_rule)
+        elif possibly_repetition and \
+            isinstance(parser.peek(), LiteralString) or \
+            parser.peek() in ('*', '+', '**', '++'):
+            repetition = repetition_type(parser)
+            return RepeatedMatchRule(
+                repeated_rule=inner_rule,
+                repetition_type=repetition
+            )
         else:
             return inner_rule
 
@@ -150,13 +163,20 @@ def simple_match(parser) -> MatchRule:
     if isinstance(parser.peek(), Ident):
         return NamedRule(name=parser.expect(Ident))
     elif isinstance(parser.peek(), LiteralString):
-        first = parser.expect(LiteralString)
-        if parser.peek() == "|":
-            parser.expect('|')
-            others = parser.parse_repeated(LiteralString, minimum=1, seperator='|')
-            return LiteralRule([first, *others])
-        else:
-            return LiteralRule(literals=[first])
+        literal = parser.expect(LiteralString)
+        return LiteralRule(literals=[literal])
+    elif parser.peek() == '(':
+        parser.expect('(')
+        if isinstance(parser.peek(), Ident):
+            name=parser.expect(Ident)
+            parser.expect(')')
+            return NamedRule(name=name)
+        literals = parser.parse_repeated(
+            LiteralString, minimum=1,
+            seperator='|'
+        )
+        parser.expect(')')
+        return LiteralRule(literals=literals)
     else:
         raise parser.unexpected_token()
 

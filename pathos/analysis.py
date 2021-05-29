@@ -125,6 +125,7 @@ class PrefixSet:
     prefixes: frozenset[Prefix]
 
     def __init__(self, prefixes):
+        assert all(isinstance(prefix, Prefix) for prefix in prefixes)
         self.prefixes = frozenset(prefixes)
 
     def __hash__(self) -> int:
@@ -172,6 +173,10 @@ class AnalysedItem(metaclass=ABCMeta):
     def list_prefixes(self, length: int = None) -> Iterator[Prefix]:
         yield from ()
 
+    def into_static_prefixes(self) -> list[Prefix]:
+        """Completely describe this rule as a set of possible prefixes"""
+        raise NotImplementedError
+
 PrefixMap: TypeAlias = dict[Prefix, list[AnalysedItem]]
 
 @dataclass
@@ -194,6 +199,9 @@ class SimpleItem(AnalysedItem):
             yield self.prefix.limit(length)
         else:
             yield self.prefix
+
+    def into_static_prefixes(self) -> list[Prefix]:
+        return [self.prefix]
 
 @dataclass
 class ChainedItem(AnalysedItem):
@@ -231,9 +239,6 @@ class ChainedItem(AnalysedItem):
                     yield first_prefix + second
                 except TypeError:
                     pass  # Can't add these I guess
-
-
-
 
 @dataclass
 class AlternativeItemList(AnalysedItem):
@@ -290,6 +295,23 @@ class AlternativeItemList(AnalysedItem):
         yield from unique
 
 @dataclass
+class OptionalItem(AnalysedItem):
+    inner_item: AnalysedItem
+
+    def print_graph(self):
+        if getattr(self, 'printed', False):
+            return
+        self.printed = True
+        label = f"{self.id}?"
+        yield f"{self.id} [label={gv_escape(label)}];"
+        yield from self.inner_item.print_graph()
+        yield f'{self.id} -> {self.inner_item.id} [label="opt_next"];'
+
+    def list_prefixes(self, length: int = None):
+        yield EmptyPrefix()
+        yield from self.inner_item.list_prefixes(length=length)
+
+@dataclass
 class RepeatedItem(AnalysedItem):
     repetition_type: RepetitionType
     seperator_token: Optional[TokenType]
@@ -323,11 +345,34 @@ class RepeatedItem(AnalysedItem):
                     pass
             yield prefix
 
+@dataclass
+class LookaheadAssertionRule(AnalysedItem):
+    prefixes: list[Prefix]
+    negative: bool
+
+    def print_graph(self):
+        if getattr(self, 'printed', False):
+            return
+        self.printed = True
+        c = '!' if self.negative else '&'
+        label = f"{self.id} {c}({' | '.join(map(str, self.prefixes))})"
+        yield f"{self.id} [label={gv_escape(label)}];"
+
+    def list_prefixes(self, length: int = None):
+        if self.negative:
+            assert len(prefix) == 1 and isinstance(self.prefixes[0], NegatedPrefix), \
+                f"Unexpected prefixes: {self.prefixes!r}"
+        else:
+            assert all(isinstance(prefix, LiteralPrefix) for prefix in self.prefixes), \
+                f"Unexpected prefixes: {self.prefixes!r}"
+        for prefix in self.prefixes:
+            yield prefix.limit(length)
+
 class AnalysedRule:
     original: parser.Rule
     name: Ident
     item: AlternativeItemList
-    """The rule as an analysed item"""
+    """The rule as an analyzed item"""
 
     def __init__(self, original: parser.Rule):
         self.original = original
@@ -424,9 +469,24 @@ class AnalysedGrammar:
                 repeated_item=self.analyse_match(item.repeated_rule)
             )
         elif isinstance(item, parser.OptionalMatchRule):
-            raise NotImplementedError("Optional matches")
+            return OptionalItem(
+                name=name,
+                inner_item=self.analyse_match(item.inner_rule)
+            )
         elif isinstance(item, parser.NegativeAssertionMatchRule):
-            raise NotImplementedError("Negative assertion match rules")
+            negated_tokens = []
+            assert isinstance(item.literal, LiteralString)
+            negated_tokens.append(LiteralTokenType(item.literal.value))
+            return LookaheadAssertionRule(name=name, prefixes=[
+                NegatedPrefix(frozenset(negated_tokens))
+            ], negative=True)
+        elif isinstance(item, parser.LookaheadAssertionMatchRule):
+            assertion_item = self.analyse_match(item.assertion)
+            try:
+                prefixes = assertion_item.into_static_prefixes()
+            except NotImplementedError:
+                raise ValueError(f"Should have simple match for lookahead: {item}")
+            return LookaheadAssertionRule(name=name, prefixes=prefixes, negative=False)
         else:
             raise TypeError(f"Unexpected item type {type(item).__name__!r}: {item!r}")
 
@@ -439,6 +499,7 @@ def collect_token_types(target: parser.Grammar) -> list[TokenType]:
         int: None,
         float: None,
         bool: None,
+        type(None): None,
         tuple: lambda t: [visit(item) for item in t],
         list: lambda l: [visit(item) for item in l],
         parser.LiteralString: lambda t: known_token_types

@@ -28,15 +28,17 @@ rule_case[RuleCase]: items=(rule_item)* '->' handler -> RuleCase { items, handle
 rule_item[RuleItem]: rule=match_rule -> Simple { rule: name }
     | name=IDENT '=' rule=match_rule -> Named { rule, name };
 
-match_rule[MatchRule]: '(' repeated_rule=simple_match ')' repetition_type -> Repeated { repeated_rule, repetition_type }
+match_rule[MatchRule]: &'(' repeated_rule=simple_match repetition_type -> Repeated { repeated_rule, repetition_type }
     | inner_rule=simple_match '?' -> Optional { rule: inner_rule }
     | negated_rule=negative_match -> Negative { negated_rule }
     | rule=simple_match -> Simple { rule }
-    | '!' literal=LITERAL_STRING -> NegativeAssertion { literal };
+    | '!' literal=LITERAL_STRING -> NegativeAssertion { literal }
+    | '&' assertion=simple_match -> LookaheadAssertion { assertion };
 
 simple_match[SimpleMatchRule]: name=IDENT -> NamedRule { name }
     | text=LITERAL_STRING -> Literal { text }
-    | first=LITERAL_STRING '|' others=(LITERAL_STRING)'|'+ -> { raise NotImplementedError };
+    | '(' name=IDENT ')' -> NamedRule { name }
+    | '(' literals=(LITERAL_STRING)'|'+ ')' -> LiteralSet { literals };
 
 repetition_type[RepetitionType]: separator=LITERAL_STRING? '*' -> ZeroOrMore { separator }
     | separator=LITERAL_STRING? '+' -> OneOrMore { separator }
