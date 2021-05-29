@@ -4,8 +4,15 @@ version = "0.1.0"
 authors = ["Techcable <Techcable@techcable.net>"]
 edition = "2018"
 
+[features]
+# By default, we use num-bigint because it's more
+# liberally licensed than GMP
+default = ["num-bigint"]
+
 [dependencies]
 logos = "0.12"
 memchr = "2.4"
-ahash = "0.7"
 unicode-xid = "0.2.2"
+# Rug backend for BigInteger arithmetic
+rug = { version = "1.12", optional = true }
+num-bigint = { version = "0.4.0", optional = true }

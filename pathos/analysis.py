@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 
+from .codegen import CodeGenerator
 from .grammar import bootstrap_parser as parser
 from .runtime import Ident
 from .utils import pairwise_longest, gv_escape
@@ -489,6 +490,17 @@ class AnalysedGrammar:
             return LookaheadAssertionRule(name=name, prefixes=prefixes, negative=False)
         else:
             raise TypeError(f"Unexpected item type {type(item).__name__!r}: {item!r}")
+
+    def generate_code(self, gen: CodeGenerator):
+        for rule in self.rules:
+            with gen.declare_method(
+                str(rule.name), args=[Arg("parser", "Parser")],
+                return_type=rule.original.result_type.text
+            ) as out:
+                assert isinstance(rule.item, AlternativeItemList)
+                common_first = []
+
+
 
 def collect_token_types(target: parser.Grammar) -> list[TokenType]:
     import dataclasses

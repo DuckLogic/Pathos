@@ -2,9 +2,16 @@
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::borrow::Borrow;
+#[cfg(feature="num-bigint")]
+use num_bigint::BigInt;
+/// A rug BigInt
+#[cfg(fefature="rug")]
+pub type BigInt = rug::Integer;
+#[cfg(not(any(feature="num-bigint"), feature="rug")))]
+/// BigInts are unused
+pub struct BigInt(!);
 
 use logos::{Logos, Lexer};
-use ahash::AHashSet;
 
 /// A python identifier
 ///
@@ -15,7 +22,7 @@ pub struct Ident(Rc<str>);
 impl Borrow<str> for Ident {
     #[inline]
     fn borrow(&self) -> &str {
-        &**self.0
+        &*self.0
     }
 }
 impl Hash for Ident {
@@ -31,81 +38,224 @@ impl PartialEq for Ident {
         Rc::ptr_eq(&self.0, &other.0)
     }
 }
-pub struct LexerState {
-    idents: AHashSet<Ident>
+struct RawLexerState {
+    starting_line: bool
+}
+impl Default for RawLexerState {
+    fn default() -> RawLexerState {
+        RawLexerState {
+            // We start out beginning a line
+            starting_line: true,
+        }
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Keyword {
+    False, // 0
+    Await, // 1
+    Else, // 2
+    Import, // 3
+    Pass, // 4
+    None, // 5
+    True, // 6
+    Class, // 7
+    Finally, // 8
+    Is, // 9
+    Return, // 10
+    And, // 11
+    Continue, // 12
+    For, // 13
+    Lambda, // 14
+    Try, // 15
+    As, // 16
+    Def, // 17
+    From, // 18
+    Nonlocal, // 19
+    While, // 20
+    Assert, // 21
+    Del, // 22
+    Global, // 23
+    Not, // 24
+    With, // 25
+    Async, // 26
+    Elif, // 27
+    If, // 28
+    Or, // 29
+    Yield, // 30
 }
 
 #[derive(Logos, Debug, PartialEq)]
-#[logos(extras = "LexerState")]
-pub enum Token<'a> {
+#[logos(extras = RawLexerState)]
+enum RawToken<'a> {
     // **************
     //    Keywords
     // **************
     #[token("False")]
-    False,
+    False, // 0
     #[token("await")]
-    Await,
+    Await, // 1
     #[token("else")]
-    Else,
+    Else, // 2
     #[token("import")]
-    Import,
+    Import, // 3
     #[token("pass")]
-    Pass,
+    Pass, // 4
     #[token("None")]
-    None,
+    None, // 5
     #[token("True")]
-    True,
+    True, // 6
     #[token("class")]
-    Class,
+    Class, // 7
     #[token("finally")]
-    Finally,
+    Finally, // 8
     #[token("is")]
-    Is,
+    Is, // 9
     #[token("return")]
-    Return,
+    Return, // 10
     #[token("and")]
-    And,
+    And, // 11
     #[token("continue")]
-    Continue,
+    Continue, // 12
     #[token("for")]
-    For,
+    For, // 13
     #[token("lambda")]
-    Lambda,
+    Lambda, // 14
     #[token("try")]
-    Try,
+    Try, // 15
     #[token("as")]
-    As,
+    As, // 16
     #[token("def")]
-    Def,
+    Def, // 17
     #[token("from")]
-    From,
+    From, // 18
     #[token("nonlocal")]
-    Nonlocal,
+    Nonlocal, // 19
     #[token("while")]
-    While,
+    While, // 20
     #[token("assert")]
-    Assert,
+    Assert, // 21
     #[token("del")]
-    Del,
+    Del, // 22
     #[token("global")]
-    Global,
+    Global, // 23
     #[token("not")]
-    Not,
+    Not, // 24
     #[token("with")]
-    With,
+    With, // 25
     #[token("async")]
-    Async,
+    Async, // 26
     #[token("elif")]
-    Elif,
+    Elif, // 27
     #[token("if")]
-    If,
+    If, // 28
     #[token("or")]
-    Or,
+    Or, // 29
     #[token("yield")]
-    Yield,
+    Yield, // 30
+    // ***************
+    //    Operators
+    // ***************
+    #[token("+")]
+    Plus, // 1
+    #[token("-")]
+    Minus, // 2
+    #[token("*")]
+    Star, // 3
+    #[token("**")]
+    DoubleStar, // 4
+    #[token("/")]
+    Slash, // 5
+    #[token("//")]
+    DoubleSlash, // 6
+    #[token("%")]
+    Percent, // 7
+    #[token("@")]
+    At, // 8
+    #[token("<<")]
+    LeftShift, // 9
+    #[token(">>")]
+    RightShift, // 10
+    #[token("&")]
+    Ampersand, // 11
+    #[token("|")]
+    BitwiseOr, // 12
+    #[token("^")]
+    BitwiseXor, // 13
+    #[token("~")]
+    BitwiseInvert, // 14
+    #[token(":=")]
+    AssignOperator, // 15
+    #[token("<")]
+    LessThan, // 16
+    #[token(">")]
+    GreaterThan, // 17
+    #[token("<=")]
+    LessThanOrEqual, // 18
+    #[token(">=")]
+    GreaterThanOrEqual, // 19
+    #[token("==")]
+    DoubleEquals, // 20
+    #[token("!=")]
+    NotEquals, // 21
+    #[token("(")]
+    OpenParen, // 22
+    #[token(")")]
+    CloseParen, // 23
+    #[token("[")]
+    OpenBracket, // 24
+    #[token("]")]
+    CloseBracket, // 25
+    #[token("{")]
+    OpenBrace, // 26
+    #[token("}")]
+    CloseBrace, // 27
+    #[token(",")]
+    Comma, // 28
+    #[token(":")]
+    Colon, // 29
+    #[token(".")]
+    Period, // 30
+    #[token(";")]
+    Semicolon, // 31
+    #[token("=")]
+    Equals, // 32
+    #[token("->")]
+    Arrow, // 33
+    #[token("+=")]
+    PlusEquals, // 34
+    #[token("-=")]
+    MinusEquals,
+    #[token("*=")]
+    StarEquals,
+    #[token("/=")]
+    SlashEquals,
+    #[token("//=")]
+    DoubleSlashEquals,
+    #[token("%=")]
+    PercentEquals,
+    #[token("@=")]
+    AtEquals,
+    #[token("&=")]
+    AndEquals,
+    #[token("|=")]
+    OrEquals,
+    #[token("^=")]
+    XorEquals,
+    #[token(">>=")]
+    RightShiftEquals,
+    #[token("<<=")]
+    LeftShiftEquals,
+    #[token("**=")]
+    DoubleStarEquals,
+    // ********************
+    //    Special Tokens
+    // ********************
     /// A python identifier
     #[regex(r"[\p{XID_Start}_][\p{XID_Continue}_]*", ident)]
-    Identifier(Ident),
+    Identifier(&'a str),
+    #[regex(r"[1-9]([_]?[1-9])*|0([_]?0)*", parse_decimal_int)]
+    Integer(Either<i64, BigInt>),
     /// A python string literal
     ///
     /// No backslashes or escapes have been interpreted
@@ -113,11 +263,24 @@ pub enum Token<'a> {
     #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string)]
     String((StringInfo, &'a str)),
     #[error]
+    #[token(r#"#"#, skip_comment)]
     Error,
-    // TODO: Indent/dedent
+    /// A raw newline
+    ///
+    /// NOTE: This is implicitly skipped if there is a backslash
+    /// right before it.
+    #[regex(r"(\n|\r\n)", newline)]
+    #[regex(r"\\(\n|\r\n)", logos::skip)]
+    RawNewline,
+    /// Raw indentation at the start of a newline
+    ///
+    /// The value of the variant indicates the amount of
+    /// indentation (both tabs and spaces).
+    #[regex(r"[\t ]+", raw_indent)]
+    RawIndent(usize),
 }
 
-#[derive(Debug, Clone, Copy, Eq, ParitalEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum StringPrefix {
     /// A format string prefix.
     Formatted,
@@ -173,10 +336,89 @@ struct StringInfo {
     raw: bool,
     quote_style: QuoteStyle
 }
-fn ident<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Ident {
-    lex.extras.idents.get_or_insert_with(lex.slice(), Rc::from)
+fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
+    debug_assert_eq!(lex.slice(), "#");
+    if let Some(line_end) = memchr::memchr(b'\n', lex.remainder().as_bytes()) {
+        lex.bump(line_end + 1);
+    } else {
+        // No newline -> Everything till EOF is a comment
+        lex.bump(lex.remainder().len());
+    }
+    logos::Skip
 }
-fn lex_string<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<(StringInfo, &'a str), ()> {
+fn raw_indent<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize> {
+    if !lex.extras.starting_line {
+        return logos::Filter::Skip;
+    }
+    let mut count = 0;
+    for b in lex.slice().bytes() {
+        match b {
+            b' ' => {
+                count += 1;
+            },
+            b'\t' => {
+                count += count % 8;
+            }
+            _ => unreachable!("Unexpected byte: {:?}", b),
+        }
+    }
+    assert!(count > 0);
+    logos::Filter::Emit(count)
+}
+fn newline<'a>(lex: &mut Lexer<'a, RawToken<'a>>) {
+    lex.extras.starting_line = true;
+}
+fn ident<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> &'a str {
+    lex.slice()
+}
+fn parse_decimal_int<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> BigInt {
+    // Eagerly attempt to parse as an `i64`
+    match i64::try_from(lex.slice()) {
+        Ok(val) => return Either::Left(val),
+        Err(_) => {
+            /*
+             * There are two possible errors:
+             * 1. Contains an underscore '_'
+             * 2. Overflows
+             *
+             * Either way we want to fallback to
+             * a more general implementation
+             */
+        }
+    }
+    #[cfg(feature="rug")]
+    {
+        let res = ::rug::Integer::parse(lex.slice()).unwrap();
+        if let Some(i) = res.to_i64() {
+            // Avoid wasting memory -> use i64 directly if possible
+            return Either::Left(i);
+        }
+        Either::Right(res)
+    }
+    #[cfg(feature="num-bigint")]
+    {
+        // This is really our slow path
+        let mut result = BigInt::new();
+        for b in lex.bytes() {
+            match b {
+                b'0'..'9' => {
+                    let digit_val = b - b'0';
+                    result *= 10i64;
+                    result += digit_val as i64;
+                },
+                b'_' => {}, // Ignore underscores
+                _ => unreachable!("Invalid byte: {:?}", b)
+            }
+        }
+        Either::Right(result)
+    }
+    #[cfg(not(any(feature="num-bigint", feature="rug")))]
+    {
+        unreachable!("BigInt failure: {}", lex.slice())
+    }
+}
+
+fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a str), StringError> {
     /*
      * Already parsed:
      * 1. Optionally: A prefix
@@ -247,7 +489,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<(StringInfo, &'a str
                     }
                 }
                 index = 0;
-                (None, false);
+                (None, false)
             }
         };
         // Match on the remaining characters
@@ -289,10 +531,10 @@ fn lex_string<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<(StringInfo, &'a str
          * to make sure we have the proper clsoing
          * in the case that we're a triple string.
          */
-        if remaining_bytes.get(index - 1) == Some(b'\\') {
+        if remaining_bytes.get(index - 1) == Some(&b'\\') {
             continue; // Skip escaped quote (or newline)
         }
-        if remaining_bytes[index] == '\n' {
+        if remaining_bytes[index] == b'\n' {
             if info.quote_style.is_triple_string() {
                 continue; // just ignore the newline
             } else {
@@ -301,7 +543,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<(StringInfo, &'a str
             }
         }
         let end = if info.quote_style.is_triple_string() {
-            match (info.quote_style, remaining_bytes.get(&[index..index + 3])) {
+            match (info.quote_style, remaining_bytes.get(index..index + 3)) {
                 (QuoteStyle::DoubleLong, Some(br#"""""#)) |
                 (QuoteStyle::SingleLong, Some(br"'''")) => {
                     // We found our closing bytes.
@@ -312,7 +554,10 @@ fn lex_string<'a>(lex: &mut Lexer<'a, Token<'a>>) -> Result<(StringInfo, &'a str
                 (QuoteStyle::Double, _) |
                 (QuoteStyle::Single, _) => unreachable!()
             }
-        } else { index + 1 };
+        } else {
+            index + 1
+        };
+        debug_assert_eq!(&remaining_bytes[index..end], expected_closing_text.as_bytes());
         lex.bump(end);
         return Ok((info, lex.slice()));
     }
