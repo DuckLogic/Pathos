@@ -1,6 +1,7 @@
 //! A lexer for python-style source code
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
+use std::cell::RefCell;
 use bumpalo::Bump;
 
 use either::Either;
@@ -17,6 +18,7 @@ pub struct BigInt {
     text: String
 }
 
+use hashbrown::HashMap;
 use logos::{Logos, Lexer};
 
 /// A python identifier
@@ -24,10 +26,13 @@ use logos::{Logos, Lexer};
 /// These are interned, so there should
 /// never be any duplicates within the same
 /// source file.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Ident<'a> {
     text: &'a str,
-    hash: u64
+    hash: u64,
+    /// A monotonically increasing id
+    /// for this identifier
+    id: u32
 }
 impl Borrow<str> for Ident<'_> {
     #[inline]
@@ -45,39 +50,304 @@ impl Eq for Ident<'_> {}
 impl PartialEq for Ident<'_> {
     #[inline]
     fn eq(&self, other: &Ident) -> bool {
-        std::ptr::eq(&self.text, &other.text)
+        std::ptr::eq(self.text, other.text)
     }
 }
-struct RawLexerState<'arena> {
-    starting_line: bool,
-    arena: &'arena Bump,
-    known_idents: hashbrown::HashMap<&'arena Ident<'arena>, ()>
+impl std::fmt::Debug for Ident<'_> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "{:?}", self.text)
+    }
 }
-impl<'arena> RawLexerState<'arena> {
-    fn new(arena: &'arena Bump) -> Self {
+struct RawLexerState {
+    starting_line: bool,
+}
+impl Default for RawLexerState {
+    #[inline]
+    fn default() -> Self {
         RawLexerState {
-            arena,
             // We start out beginning a line
             starting_line: true,
-            known_idents: hashbrown::HashMap::new()
         }
     }
 }
 
-pub struct PythonLexer<'in, 'arena> {
-    arena: &'arena Bump,
-    text: &'in str,
-    tokens:     ,
+#[derive(Debug)]
+pub enum LexError {
+    Unknown
 }
-impl<'in, 'arena> PythonLexer<'in, 'arena> {
-    pub fn next(&mut self) -> Token<'arena> {
-        Token::lexer()
+
+pub struct PythonLexer<'src, 'arena: 'src> {
+    arena: &'arena Bump,
+    text: &'src str,
+    raw_lexer: Lexer<'src, RawToken<'src>>,
+    known_idents: hashbrown::HashMap<&'arena Ident<'arena>, ()>,
+    pending_indentation_change: isize,
+    indent_stack: Vec<usize>
+}
+
+macro_rules! translate_tokens {
+    ($target:expr; $($name:ident $( ( $mtch:ident ) )? $(=> $handler:expr)?),*) => {{
+        use self::RawToken::*;
+        match $target {
+            $(RawToken::$name $( ( $mtch ) )? => {
+                translate_tokens!(handler for $name $( ($mtch) )? $(=> $handler)?)
+            }),*
+        }
+    }};
+    (handler for $name:ident $(( $mtch:ident ) )? => $handler:expr) => ($handler);
+    (handler for $name:ident) => (Token::$name);
+}
+impl<'src, 'arena> PythonLexer<'src, 'arena> {
+    pub fn new(arena: &'arena Bump, text: &'src str) -> Self {
+        PythonLexer {
+            arena, text,
+            raw_lexer: RawToken::lexer(text),
+            known_idents: ::hashbrown::HashMap::default(),
+            pending_indentation_change: 0,
+            indent_stack: vec![0]
+        }
+    }
+    pub fn reset(&mut self, text: &'src str) {
+        self.text = text;
+        self.raw_lexer = RawToken::lexer(text);
+        self.pending_indentation_change = 0;
+        self.indent_stack.clear();
+        self.indent_stack.push(0);
+    }
+    pub fn lex_all(&mut self, text: &'src str) -> Result<Vec<Token<'arena>>, LexError> {
+        self.reset(text);
+        let mut res = Vec::new();
+        while let Some(token) = self.next()? {
+            res.push(token);
+        }
+        Ok(res)
+    } 
+    pub fn create_ident(&mut self, text: &'src str) -> &'arena Ident<'arena> {
+        use std::hash::BuildHasher;
+        use std::convert::TryFrom;
+        let old_len = u32::try_from(self.known_idents.len())
+            .expect("Too many identifiers");
+        let mut hasher = self.known_idents.hasher().build_hasher();
+        hasher.write(text.as_bytes());
+        let hash = hasher.finish();
+        match self.known_idents.raw_entry_mut().from_hash(hash, |other| {
+            other.hash == hash && other.text == text
+        }) {
+            hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
+                *entry.key()
+            },
+            hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
+                let allocated_text = self.arena.alloc_str(text);
+                let key = self.arena.alloc(Ident {
+                    text: allocated_text, hash, id: old_len
+                });
+                entry.insert_hashed_nocheck(hash, key, ());
+                assert!(self.known_idents.len() > old_len as usize);
+                key
+            }
+        }
+    }
+    #[allow(unused)]
+    pub fn next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
+        if self.pending_indentation_change != 0 {
+            if self.pending_indentation_change < 0 {
+                self.pending_indentation_change += 1;
+                return Ok(Some(Token::DecreaseIndent));
+            } else if self.pending_indentation_change > 0 {
+                self.pending_indentation_change -= 1;
+                return Ok(Some(Token::IncreaseIndent));
+            } else { unreachable!() }
+        }
+        'yum: loop {
+            // Lets do some post processing ;)
+            let token = match self.raw_lexer.next() {
+                Some(val) => val,
+                None => return Ok(None) // EOF
+            };
+            return Ok(Some(translate_tokens!(token;
+                /*
+                 * The 'raw' lexer filters out all spaces and tabs
+                 * unless it is at the start of a line.
+                 * However, it doesn't do the implicit comparison
+                 * against the stack as described here:
+                 * https://docs.python.org/3.9/reference/lexical_analysis.html#indentation
+                 */
+                RawIndent (amount) => {
+                    let current_top = *self.indent_stack.last().unwrap();
+                    if amount == current_top {
+                        continue 'yum;
+                    } else if amount > current_top {
+                        self.indent_stack.push(amount);
+                        return Ok(Some(Token::IncreaseIndent));
+                    } else {
+                        assert_eq!(self.pending_indentation_change, 0);
+                        while amount < *self.indent_stack.last().unwrap() {
+                            self.indent_stack.pop();
+                            self.pending_indentation_change -= 1;
+                            assert!(!self.indent_stack.is_empty());
+                        }
+                        assert!(self.pending_indentation_change < 0);
+                        self.pending_indentation_change += 1;
+                        assert!(!self.indent_stack.is_empty());
+                        return Ok(Some(Token::DecreaseIndent));
+                    }
+                },
+                RawNewline => Token::Newline, // TODO: Do we need to do anything else?
+                Integer (inner) => {
+                    match inner {
+                        Either::Left(int) => Token::IntegerLiteral(int),
+                        Either::Right(int) => Token::BigIntegerLiteral(self.arena.alloc(int))
+                    }
+                },
+                Identifier (text) => {
+                    Token::Ident(self.create_ident(text))
+                },
+                FloatLiteral (f) => Token::FloatLiteral(f),
+                Error => {
+                    return Err(LexError::Unknown)
+                },
+                String(s) => {
+                    Token::StringLiteral(self.arena.alloc(StringInfo {
+                        prefix: s.prefix,
+                        raw: s.raw,
+                        quote_style: s.quote_style,
+                        original_text: self.arena.alloc_str(s.original_text)
+                    }))
+                },
+                // keywords
+                False, Await, Else, Import, Pass, None,
+                True, Class, Finally, Is, Return, And,
+                Continue, For, Lambda, Try, As, Def, From,
+                Nonlocal, While, Assert, Del, Global, Not,
+                With, Async, Elif, If, Or, Yield,
+                // operators
+                Plus, Minus, Star, DoubleStar, Slash, DoubleSlash,
+                Percent, At, LeftShift, RightShift, Ampersand,
+                BitwiseOr, BitwiseXor, BitwiseInvert, AssignOperator,
+                LessThan, GreaterThan, LessThanOrEqual, GreaterThanOrEqual,
+                DoubleEquals, NotEquals, OpenParen, CloseParen,
+                OpenBracket, CloseBracket, OpenBrace, CloseBrace,
+                Comma, Colon, Period, Semicolon, Equals, Arrow,
+                PlusEquals, MinusEquals, StarEquals, SlashEquals,
+                DoubleSlashEquals, PercentEquals, AtEquals,
+                AndEquals, OrEquals, XorEquals, RightShiftEquals,
+                LeftShiftEquals, DoubleStarEquals
+            )));
+        }
     }
 }
 
-#[derive(Logos, Copy, Clone, Debug, PartialEq)]
+
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Token<'arena> {
     // **************
+    //    Keywords
+    // **************
+    False, // 0
+    Await, // 1
+    Else, // 2
+    Import, // 3
+    Pass, // 4
+    None, // 5
+    True, // 6
+    Class, // 7
+    Finally, // 8
+    Is, // 9
+    Return, // 10
+    And, // 11
+    Continue, // 12
+    For, // 13
+    Lambda, // 14
+    Try, // 15
+    As, // 16
+    Def, // 17
+    From, // 18
+    Nonlocal, // 19
+    While, // 20
+    Assert, // 21
+    Del, // 22
+    Global, // 23
+    Not, // 24
+    With, // 25
+    Async, // 26
+    Elif, // 27
+    If, // 28
+    Or, // 29
+    Yield, // 30
+    // ***************
+    //    Operators
+    // ***************
+    Plus, // 1
+    Minus, // 2
+    Star, // 3
+    DoubleStar, // 4
+    Slash, // 5
+    DoubleSlash, // 6
+    Percent, // 7
+    At, // 8
+    LeftShift, // 9
+    RightShift, // 10
+    Ampersand, // 11
+    BitwiseOr, // 12
+    BitwiseXor, // 13
+    BitwiseInvert, // 14
+    AssignOperator, // 15
+    LessThan, // 16
+    GreaterThan, // 17
+    LessThanOrEqual, // 18
+    GreaterThanOrEqual, // 19
+    DoubleEquals, // 20
+    NotEquals, // 21
+    OpenParen, // 22
+    CloseParen, // 23
+    OpenBracket, // 24
+    CloseBracket, // 25
+    OpenBrace, // 26
+    CloseBrace, // 27
+    Comma, // 28
+    Colon, // 29
+    Period, // 30
+    Semicolon, // 31
+    Equals, // 32
+    Arrow, // 33
+    PlusEquals, // 34
+    MinusEquals, // 35
+    StarEquals, // 36
+    SlashEquals, // 37
+    DoubleSlashEquals, // 39
+    PercentEquals, // 38
+    AtEquals, // 40
+    AndEquals, // 41
+    OrEquals, // 42
+    XorEquals, // 43
+    RightShiftEquals, // 44
+    LeftShiftEquals, // 45
+    DoubleStarEquals, // 46
+    IntegerLiteral(i64),
+    FloatLiteral(f64),
+    /// An arbitrary-precision integer,
+    /// that is too big to fit in a regular int.
+    BigIntegerLiteral(&'arena BigInt),
+    /// A string literal
+    // TODO: Actually parse the underlying text
+    StringLiteral(&'arena StringInfo<'arena>),
+    /// An identifier.
+    ///
+    /// Do not confuse this with [Token::IncreaseIndent].
+    /// This has the shorter name because it is more common.
+    Ident(&'arena Ident<'arena>),
+    /// Increase the indentation
+    IncreaseIndent,
+    /// Decrease the indentation
+    DecreaseIndent,
+    /// A logical newline
+    Newline,
+}
+
+#[derive(Logos, Debug, PartialEq)]
+#[logos(extras = RawLexerState)]
+enum RawToken<'src> {
+    // ********I******
     //    Keywords
     // **************
     #[token("False")]
@@ -237,37 +507,17 @@ pub enum Token<'arena> {
     LeftShiftEquals, // 45
     #[token("**=")]
     DoubleStarEquals, // 46
-    IntegerLiteral(i64),
-    /// An arbitrary-precision integer,
-    /// that is too big to fit in a regular int.
-    BigIntegerLiteral(&'arena BigInt),
-    /// A string literal
-    // TODO: Actually parse the underlying text
-    StringLiteral(&'arena StringInfo),
-    /// Increase the indentation
-    Indent,
-    /// Decrease the indentation
-    Dedent,
-    #[error]
-    Error,
-}
-
-pub 
-
-#[derive(Logos, Debug, PartialEq)]
-#[logos(extras = RawLexerState<'s>)]
-enum RawToken<'a> {
     // ********************
     //    Special Tokens
     // ********************
     /// A python identifier
     #[regex(r"[\p{XID_Start}_][\p{XID_Continue}_]*", ident)]
-    Identifier(&'a Ident<'a>),
+    Identifier(&'src str),
     #[regex(r"[1-9]([_1-9])*|0([_0])*", parse_decimal_int)]
     #[regex(r"0[xX][_0-9A-F]+", parse_hex_int)]
     #[regex(r"0[bB][_01]+", parse_bin_int)]
     #[regex(r"0[oO][_0-9]+", parse_octal_int)]
-    Integer(Either<i64, &'a BigInt>),
+    Integer(Either<i64, BigInt>),
     /// A python string literal
     ///
     /// No backslashes or escapes have been interpreted
@@ -278,7 +528,7 @@ enum RawToken<'a> {
     /// We should also use a sub-parser, just like shown here:
     /// https://github.com/maciejhirsz/logos/blob/99d8f4ce/tests/tests/lexer_modes.rs#L11
     #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string)]
-    String((StringInfo, &'a str)),
+    String(StringInfo<'src>),
     #[regex(r##"(([0-9][_0-9]+)?\.([0-9][_0-9]+)|([0-9][_0-9]+)\.)([eE][+-]?([0-9][_0-9]+))?"##, lex_float)]
     #[regex(r##"(([0-9][_0-9]+)?(\.)?([0-9][_0-9]+)?)([eE][+-]?([0-9][_0-9]+))"##, lex_float)]
     FloatLiteral(f64),
@@ -348,13 +598,17 @@ impl QuoteStyle {
     }
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct StringInfo {
+pub struct StringInfo<'src> {
     /// An explicit string prefix,
     /// or none if it's just a plain string
-    prefix: Option<StringPrefix>,
+    pub prefix: Option<StringPrefix>,
     /// True if the string is also a raw string
-    raw: bool,
-    quote_style: QuoteStyle
+    pub raw: bool,
+    pub quote_style: QuoteStyle,
+    /// The original text of this string.
+    ///
+    /// Backslashes have not been interpreted
+    pub original_text: &'src str
 }
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
@@ -395,33 +649,14 @@ fn raw_indentation<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize
 fn newline<'a>(lex: &mut Lexer<'a, RawToken<'a>>) {
     lex.extras.starting_line = true;
 }
-fn ident<'arena>(lex: &mut Lexer<'arena, RawToken<'arena>>) -> &'arena Ident<'arena> {
-    use std::hash::BuildHasher;
-    let key = lex.slice();
-    let mut hasher = lex.extras.known_idents.hasher().build_hasher();
-    hasher.write(key.as_bytes());
-    let hash = hasher.finish();
-    match lex.extras.known_idents.raw_entry_mut().from_hash(hash, |other| {
-        other.hash == hash && other.text == key
-    }) {
-        hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
-            *entry.key()
-        },
-        hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
-            let allocated_key = lex.extras.arena.alloc_str(key);
-            let key = lex.extras.arena.alloc(Ident {
-                text: allocated_key, hash
-            });
-            entry.insert_hashed_nocheck(hash, key, ());
-            key
-        }
-    }
+#[inline]
+fn ident<'src>(lex: &mut Lexer<'src, RawToken<'src>>) -> &'src str {
+    lex.slice() // We don't intern till later ;)
 }
 #[cold]
 fn fallback_parse_int<'arena>(
-    arena: &'arena bumpalo::Bump,
     radix: i64, text: &str
-) -> &'arena BigInt {
+) -> BigInt {
     /*
      * We get here if the regular integer parse code overflows.
      *
@@ -442,25 +677,23 @@ fn fallback_parse_int<'arena>(
             result *= radix;
             result += digit_val as i64;
         }
-        arena.alloc(result)
+        result
     }
     #[cfg(feature="rug")]
     {
         let parsed = BigInt::parse_radix(text, radix).unwrap();
-        arena.alloc(BigInt::from(parsed))
+        BigInt::from(parsed)
     }
     #[cfg(not(any(feature="num-bigint", feature="rug")))]
     {
-        arena.alloc(BigInt {
-            // This double boxing is stupid,
-            // but this is the slow-path anyways
+        BigInt {
             text: String::from(text)
-        })
+        }
     }
 }
 macro_rules! int_parse_func {
     ($name:ident, radix = $radix:literal, strip = |$s:ident| $strip_code:expr) => {
-        fn $name<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Either<i64, &'a BigInt> {
+        fn $name<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Either<i64, BigInt> {
             // Eagerly attempt to parse as an `i64`
             let mut result = 0i64;
             let remaining: &str = {
@@ -481,7 +714,7 @@ macro_rules! int_parse_func {
                     Some(result) => result,
                     None => {
                         return Either::Right(fallback_parse_int(
-                            lex.extras.arena, RADIX, remaining
+                            RADIX, remaining
                         ));
                     }
                 };
@@ -524,13 +757,13 @@ int_parse_func!(
         &s[2..]
     }
 );
-fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a str), StringError> {
+fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, StringError> {
     /*
      * Already parsed:
      * 1. Optionally: A prefix
      * 2. A string start, either triple string or single string
      */
-    let info = {
+    let mut info = {
         let slice = lex.slice();
         /*
          * NOTE: The lexer isn't affected by string prefixes.
@@ -607,7 +840,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a 
             r#"'''"# => QuoteStyle::SingleLong,
             _ => unreachable!("Unexpected chars")
         };
-        StringInfo { prefix, raw, quote_style }
+        StringInfo { prefix, raw, quote_style, original_text: "" }
     };
     /*
      * NOTE: This starts at the end of the
@@ -665,7 +898,8 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a 
         };
         debug_assert_eq!(&remaining_bytes[index..end], expected_closing_text.as_bytes());
         lex.bump(end);
-        return Ok((info, lex.slice()));
+        info.original_text = lex.slice();
+        return Ok(info);
     }
     Err(StringError::NoClosingQuote) // no closing paren
 }
@@ -673,4 +907,28 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a 
 enum StringError {
     NoClosingQuote,
     ForbiddenNewline
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    #[test]
+    fn basic() {
+        let arena = Bump::new();
+        let mut lexer = PythonLexer::new(&arena, "");
+        assert_eq!(
+            lexer.lex_all("def foo(a, b, cat)").unwrap(),
+            vec![
+                Token::Def,
+                Token::Ident(lexer.create_ident("foo")),
+                Token::OpenParen,
+                Token::Ident(lexer.create_ident("a")),
+                Token::Comma,
+                Token::Ident(lexer.create_ident("b")),
+                Token::Comma,
+                Token::Ident(lexer.create_ident("cat")),
+                Token::CloseParen
+            ]
+        );
+    }
 }
