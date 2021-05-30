@@ -1,8 +1,6 @@
 //! A lexer for python-style source code
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 use std::borrow::Borrow;
-use hashbrown::HashMap;
 use bumpalo::Bump;
 
 use either::Either;
@@ -27,32 +25,35 @@ use logos::{Logos, Lexer};
 /// never be any duplicates within the same
 /// source file.
 #[derive(Clone, Debug)]
-pub struct Ident<'a>(&'a str);
+pub struct Ident<'a> {
+    text: &'a str,
+    hash: u64
+}
 impl Borrow<str> for Ident<'_> {
     #[inline]
     fn borrow(&self) -> &str {
-        &*self.0
+        self.text
     }
 }
 impl Hash for Ident<'_> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(&self.0, state);
+        state.write_u64(self.hash);
     }
 }
 impl Eq for Ident<'_> {}
 impl PartialEq for Ident<'_> {
     #[inline]
     fn eq(&self, other: &Ident) -> bool {
-        std::ptr::eq(&self.0, &other.0)
+        std::ptr::eq(&self.text, &other.text)
     }
 }
 struct RawLexerState<'arena> {
     starting_line: bool,
     arena: &'arena Bump,
-    known_idents: hashbrown::HashMap<&'arena str, ()>
+    known_idents: hashbrown::HashMap<&'arena Ident<'arena>, ()>
 }
-impl RawLexerState<'arena> {
+impl<'arena> RawLexerState<'arena> {
     fn new(arena: &'arena Bump) -> Self {
         RawLexerState {
             arena,
@@ -60,6 +61,17 @@ impl RawLexerState<'arena> {
             starting_line: true,
             known_idents: hashbrown::HashMap::new()
         }
+    }
+}
+
+pub struct PythonLexer<'in, 'arena> {
+    arena: &'arena Bump,
+    text: &'in str,
+    tokens:     ,
+}
+impl<'in, 'arena> PythonLexer<'in, 'arena> {
+    pub fn next(&mut self) -> Token<'arena> {
+        Token::lexer()
     }
 }
 
@@ -231,27 +243,31 @@ pub enum Token<'arena> {
     BigIntegerLiteral(&'arena BigInt),
     /// A string literal
     // TODO: Actually parse the underlying text
-    StringLiteral {
-        info: &'arena StringInfo
-    },
+    StringLiteral(&'arena StringInfo),
+    /// Increase the indentation
+    Indent,
+    /// Decrease the indentation
+    Dedent,
     #[error]
     Error,
 }
 
+pub 
+
 #[derive(Logos, Debug, PartialEq)]
-#[logos(extras = RawLexerState)]
+#[logos(extras = RawLexerState<'s>)]
 enum RawToken<'a> {
     // ********************
     //    Special Tokens
     // ********************
     /// A python identifier
     #[regex(r"[\p{XID_Start}_][\p{XID_Continue}_]*", ident)]
-    Identifier(&'a str),
+    Identifier(&'a Ident<'a>),
     #[regex(r"[1-9]([_1-9])*|0([_0])*", parse_decimal_int)]
     #[regex(r"0[xX][_0-9A-F]+", parse_hex_int)]
     #[regex(r"0[bB][_01]+", parse_bin_int)]
     #[regex(r"0[oO][_0-9]+", parse_octal_int)]
-    Integer(Either<i64, BigInt>),
+    Integer(Either<i64, &'a BigInt>),
     /// A python string literal
     ///
     /// No backslashes or escapes have been interpreted
@@ -263,7 +279,9 @@ enum RawToken<'a> {
     /// https://github.com/maciejhirsz/logos/blob/99d8f4ce/tests/tests/lexer_modes.rs#L11
     #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string)]
     String((StringInfo, &'a str)),
-    #[regex(r##"([0-9][_0-9]+)?\.([0-9][_0-9]+)"##, parse_float)]
+    #[regex(r##"(([0-9][_0-9]+)?\.([0-9][_0-9]+)|([0-9][_0-9]+)\.)([eE][+-]?([0-9][_0-9]+))?"##, lex_float)]
+    #[regex(r##"(([0-9][_0-9]+)?(\.)?([0-9][_0-9]+)?)([eE][+-]?([0-9][_0-9]+))"##, lex_float)]
+    FloatLiteral(f64),
     #[error]
     #[token(r#"#"#, skip_comment)]
     Error,
@@ -278,7 +296,7 @@ enum RawToken<'a> {
     ///
     /// The value of the variant indicates the amount of
     /// indentation (both tabs and spaces).
-    #[regex(r"[\t ]+", raw_indent)]
+    #[regex(r"[\t ]+", raw_indentation)]
     RawIndent(usize),
 }
 
@@ -330,7 +348,7 @@ impl QuoteStyle {
     }
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct StringInfo<'a> {
+struct StringInfo {
     /// An explicit string prefix,
     /// or none if it's just a plain string
     prefix: Option<StringPrefix>,
@@ -338,7 +356,7 @@ struct StringInfo<'a> {
     raw: bool,
     quote_style: QuoteStyle
 }
-fn skip_comment(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Skip {
+fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
     if let Some(line_end) = memchr::memchr(b'\n', lex.remainder().as_bytes()) {
         lex.bump(line_end + 1);
@@ -348,7 +366,14 @@ fn skip_comment(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Skip {
     }
     logos::Skip
 }
-fn raw_indentation>(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Filter<usize> {
+fn lex_float<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> f64 {
+    // This should not fail
+    ::lexical_core::parse_format::<f64>(
+        lex.slice().as_bytes(),
+        ::lexical_core::NumberFormat::PYTHON3_LITERAL,
+    ).unwrap()
+}
+fn raw_indentation<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize> {
     if !lex.extras.starting_line {
         return logos::Filter::Skip;
     }
@@ -367,11 +392,30 @@ fn raw_indentation>(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Filter<usize> {
     assert!(count > 0);
     logos::Filter::Emit(count)
 }
-fn newline<'a>(lex: &mut Lexer<'_, RawToken<'_>>) {
+fn newline<'a>(lex: &mut Lexer<'a, RawToken<'a>>) {
     lex.extras.starting_line = true;
 }
-fn ident<'arena>(lex: &mut Lexer<'_, RawToken<'arena>>) -> Ident<'arena> {
-    lex.slice()
+fn ident<'arena>(lex: &mut Lexer<'arena, RawToken<'arena>>) -> &'arena Ident<'arena> {
+    use std::hash::BuildHasher;
+    let key = lex.slice();
+    let mut hasher = lex.extras.known_idents.hasher().build_hasher();
+    hasher.write(key.as_bytes());
+    let hash = hasher.finish();
+    match lex.extras.known_idents.raw_entry_mut().from_hash(hash, |other| {
+        other.hash == hash && other.text == key
+    }) {
+        hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
+            *entry.key()
+        },
+        hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
+            let allocated_key = lex.extras.arena.alloc_str(key);
+            let key = lex.extras.arena.alloc(Ident {
+                text: allocated_key, hash
+            });
+            entry.insert_hashed_nocheck(hash, key, ());
+            key
+        }
+    }
 }
 #[cold]
 fn fallback_parse_int<'arena>(
@@ -398,16 +442,16 @@ fn fallback_parse_int<'arena>(
             result *= radix;
             result += digit_val as i64;
         }
-        bump.alloc(result)
+        arena.alloc(result)
     }
     #[cfg(feature="rug")]
     {
         let parsed = BigInt::parse_radix(text, radix).unwrap();
-        bump.alloc(BigInt::from(parsed))
+        arena.alloc(BigInt::from(parsed))
     }
     #[cfg(not(any(feature="num-bigint", feature="rug")))]
     {
-        bump.alloc(BigInt {
+        arena.alloc(BigInt {
             // This double boxing is stupid,
             // but this is the slow-path anyways
             text: String::from(text)
@@ -416,7 +460,7 @@ fn fallback_parse_int<'arena>(
 }
 macro_rules! int_parse_func {
     ($name:ident, radix = $radix:literal, strip = |$s:ident| $strip_code:expr) => {
-        fn $name<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Either<i64, BigInt> {
+        fn $name<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Either<i64, &'a BigInt> {
             // Eagerly attempt to parse as an `i64`
             let mut result = 0i64;
             let remaining: &str = {
