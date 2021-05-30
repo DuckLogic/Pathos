@@ -2,92 +2,69 @@
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::borrow::Borrow;
+use hashbrown::HashMap;
+use bumpalo::Bump;
+
+use either::Either;
+
 #[cfg(feature="num-bigint")]
-use num_bigint::BigInt;
-/// A rug BigInt
+/// An arbitrary precision integer
+pub type BigInt = num_bigint::BigInt;
 #[cfg(fefature="rug")]
+/// A rug BigInt
 pub type BigInt = rug::Integer;
-#[cfg(not(any(feature="num-bigint"), feature="rug")))]
-/// BigInts are unused
-pub struct BigInt(!);
+#[cfg(not(any(feature="num-bigint", feature="rug")))]
+/// How integers are stored if big integers are disabled
+pub struct BigInt {
+    text: String
+}
 
 use logos::{Logos, Lexer};
 
 /// A python identifier
 ///
 /// These are interned, so there should
-/// never be any duplicates within the same source file.
+/// never be any duplicates within the same
+/// source file.
 #[derive(Clone, Debug)]
-pub struct Ident(Rc<str>);
-impl Borrow<str> for Ident {
+pub struct Ident<'a>(&'a str);
+impl Borrow<str> for Ident<'_> {
     #[inline]
     fn borrow(&self) -> &str {
         &*self.0
     }
 }
-impl Hash for Ident {
+impl Hash for Ident<'_> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        std::ptr::hash(Rc::as_ptr(&self.0), state);
+        std::ptr::hash(&self.0, state);
     }
 }
-impl Eq for Ident {}
-impl PartialEq for Ident {
+impl Eq for Ident<'_> {}
+impl PartialEq for Ident<'_> {
     #[inline]
     fn eq(&self, other: &Ident) -> bool {
-        Rc::ptr_eq(&self.0, &other.0)
+        std::ptr::eq(&self.0, &other.0)
     }
 }
-struct RawLexerState {
-    starting_line: bool
+struct RawLexerState<'arena> {
+    starting_line: bool,
+    arena: &'arena Bump,
+    known_idents: hashbrown::HashMap<&'arena str, ()>
 }
-impl Default for RawLexerState {
-    fn default() -> RawLexerState {
+impl RawLexerState<'arena> {
+    fn new(arena: &'arena Bump) -> Self {
         RawLexerState {
+            arena,
             // We start out beginning a line
             starting_line: true,
+            known_idents: hashbrown::HashMap::new()
         }
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum Keyword {
-    False, // 0
-    Await, // 1
-    Else, // 2
-    Import, // 3
-    Pass, // 4
-    None, // 5
-    True, // 6
-    Class, // 7
-    Finally, // 8
-    Is, // 9
-    Return, // 10
-    And, // 11
-    Continue, // 12
-    For, // 13
-    Lambda, // 14
-    Try, // 15
-    As, // 16
-    Def, // 17
-    From, // 18
-    Nonlocal, // 19
-    While, // 20
-    Assert, // 21
-    Del, // 22
-    Global, // 23
-    Not, // 24
-    With, // 25
-    Async, // 26
-    Elif, // 27
-    If, // 28
-    Or, // 29
-    Yield, // 30
-}
-
-#[derive(Logos, Debug, PartialEq)]
-#[logos(extras = RawLexerState)]
-enum RawToken<'a> {
+#[derive(Logos, Copy, Clone, Debug, PartialEq)]
+pub enum Token<'arena> {
     // **************
     //    Keywords
     // **************
@@ -225,43 +202,68 @@ enum RawToken<'a> {
     #[token("+=")]
     PlusEquals, // 34
     #[token("-=")]
-    MinusEquals,
+    MinusEquals, // 35
     #[token("*=")]
-    StarEquals,
+    StarEquals, // 36
     #[token("/=")]
-    SlashEquals,
+    SlashEquals, // 37
     #[token("//=")]
-    DoubleSlashEquals,
+    DoubleSlashEquals, // 39
     #[token("%=")]
-    PercentEquals,
+    PercentEquals, // 38
     #[token("@=")]
-    AtEquals,
+    AtEquals, // 40
     #[token("&=")]
-    AndEquals,
+    AndEquals, // 41
     #[token("|=")]
-    OrEquals,
+    OrEquals, // 42
     #[token("^=")]
-    XorEquals,
+    XorEquals, // 43
     #[token(">>=")]
-    RightShiftEquals,
+    RightShiftEquals, // 44
     #[token("<<=")]
-    LeftShiftEquals,
+    LeftShiftEquals, // 45
     #[token("**=")]
-    DoubleStarEquals,
+    DoubleStarEquals, // 46
+    IntegerLiteral(i64),
+    /// An arbitrary-precision integer,
+    /// that is too big to fit in a regular int.
+    BigIntegerLiteral(&'arena BigInt),
+    /// A string literal
+    // TODO: Actually parse the underlying text
+    StringLiteral {
+        info: &'arena StringInfo
+    },
+    #[error]
+    Error,
+}
+
+#[derive(Logos, Debug, PartialEq)]
+#[logos(extras = RawLexerState)]
+enum RawToken<'a> {
     // ********************
     //    Special Tokens
     // ********************
     /// A python identifier
     #[regex(r"[\p{XID_Start}_][\p{XID_Continue}_]*", ident)]
     Identifier(&'a str),
-    #[regex(r"[1-9]([_]?[1-9])*|0([_]?0)*", parse_decimal_int)]
+    #[regex(r"[1-9]([_1-9])*|0([_0])*", parse_decimal_int)]
+    #[regex(r"0[xX][_0-9A-F]+", parse_hex_int)]
+    #[regex(r"0[bB][_01]+", parse_bin_int)]
+    #[regex(r"0[oO][_0-9]+", parse_octal_int)]
     Integer(Either<i64, BigInt>),
     /// A python string literal
     ///
     /// No backslashes or escapes have been interpreted
     /// in any way. It's up to the parser to do that.
+    ///
+    /// TODO: We should interpret slashes ourselves.
+    /// 
+    /// We should also use a sub-parser, just like shown here:
+    /// https://github.com/maciejhirsz/logos/blob/99d8f4ce/tests/tests/lexer_modes.rs#L11
     #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string)]
     String((StringInfo, &'a str)),
+    #[regex(r##"([0-9][_0-9]+)?\.([0-9][_0-9]+)"##, parse_float)]
     #[error]
     #[token(r#"#"#, skip_comment)]
     Error,
@@ -328,7 +330,7 @@ impl QuoteStyle {
     }
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-struct StringInfo {
+struct StringInfo<'a> {
     /// An explicit string prefix,
     /// or none if it's just a plain string
     prefix: Option<StringPrefix>,
@@ -336,7 +338,7 @@ struct StringInfo {
     raw: bool,
     quote_style: QuoteStyle
 }
-fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
+fn skip_comment(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
     if let Some(line_end) = memchr::memchr(b'\n', lex.remainder().as_bytes()) {
         lex.bump(line_end + 1);
@@ -346,7 +348,7 @@ fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     }
     logos::Skip
 }
-fn raw_indent<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize> {
+fn raw_indentation>(lex: &mut Lexer<'_, RawToken<'_>>) -> logos::Filter<usize> {
     if !lex.extras.starting_line {
         return logos::Filter::Skip;
     }
@@ -365,59 +367,119 @@ fn raw_indent<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize> {
     assert!(count > 0);
     logos::Filter::Emit(count)
 }
-fn newline<'a>(lex: &mut Lexer<'a, RawToken<'a>>) {
+fn newline<'a>(lex: &mut Lexer<'_, RawToken<'_>>) {
     lex.extras.starting_line = true;
 }
-fn ident<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> &'a str {
+fn ident<'arena>(lex: &mut Lexer<'_, RawToken<'arena>>) -> Ident<'arena> {
     lex.slice()
 }
-fn parse_decimal_int<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> BigInt {
-    // Eagerly attempt to parse as an `i64`
-    match i64::try_from(lex.slice()) {
-        Ok(val) => return Either::Left(val),
-        Err(_) => {
-            /*
-             * There are two possible errors:
-             * 1. Contains an underscore '_'
-             * 2. Overflows
-             *
-             * Either way we want to fallback to
-             * a more general implementation
-             */
+#[cold]
+fn fallback_parse_int<'arena>(
+    arena: &'arena bumpalo::Bump,
+    radix: i64, text: &str
+) -> &'arena BigInt {
+    /*
+     * We get here if the regular integer parse code overflows.
+     *
+     * We fallback to parsing as a arbitrary precision integer.
+     */
+    #[cfg(feature="num-bigint")]
+    {
+        assert!(radix >= 1);
+        let mut result = BigInt::default();
+        for b in text.bytes() {
+            let digit_val = match b {
+                b'0'..=b'9' => b - b'0',
+                b'A'..=b'F' => b - b'A',
+                b'a'..=b'f' => b - b'a',
+                b'_' => continue, // Ignore underscores
+                _ => unreachable!("Invalid byte: {:?}", b)
+            };
+            result *= radix;
+            result += digit_val as i64;
         }
+        bump.alloc(result)
     }
     #[cfg(feature="rug")]
     {
-        let res = ::rug::Integer::parse(lex.slice()).unwrap();
-        if let Some(i) = res.to_i64() {
-            // Avoid wasting memory -> use i64 directly if possible
-            return Either::Left(i);
-        }
-        Either::Right(res)
-    }
-    #[cfg(feature="num-bigint")]
-    {
-        // This is really our slow path
-        let mut result = BigInt::new();
-        for b in lex.bytes() {
-            match b {
-                b'0'..'9' => {
-                    let digit_val = b - b'0';
-                    result *= 10i64;
-                    result += digit_val as i64;
-                },
-                b'_' => {}, // Ignore underscores
-                _ => unreachable!("Invalid byte: {:?}", b)
-            }
-        }
-        Either::Right(result)
+        let parsed = BigInt::parse_radix(text, radix).unwrap();
+        bump.alloc(BigInt::from(parsed))
     }
     #[cfg(not(any(feature="num-bigint", feature="rug")))]
     {
-        unreachable!("BigInt failure: {}", lex.slice())
+        bump.alloc(BigInt {
+            // This double boxing is stupid,
+            // but this is the slow-path anyways
+            text: String::from(text)
+        })
     }
 }
+macro_rules! int_parse_func {
+    ($name:ident, radix = $radix:literal, strip = |$s:ident| $strip_code:expr) => {
+        fn $name<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Either<i64, BigInt> {
+            // Eagerly attempt to parse as an `i64`
+            let mut result = 0i64;
+            let remaining: &str = {
+                let $s = lex.slice();
+                $strip_code
+            };
+            const RADIX: i64 = $radix;
+            for b in remaining.bytes() {
+                let digit_value = match b {
+                    b'0'..=b'9' => b - b'0',
+                    b'A'..=b'F' => b - b'A',
+                    b'a'..=b'f' => b - b'a',
+                    b'_' => continue,
+                    _ => unreachable!("Forbidden digit: {:?}", b)
+                } as i64;
+                result = match result.checked_mul(RADIX)
+                    .and_then(|res| res.checked_add(digit_value)) {
+                    Some(result) => result,
+                    None => {
+                        return Either::Right(fallback_parse_int(
+                            lex.extras.arena, RADIX, remaining
+                        ));
+                    }
+                };
+            }
+            Either::Left(result)
+        }
+    }
+}
+int_parse_func!(
+    parse_decimal_int,
+    radix = 10,
+    strip = |s| s
+);
+int_parse_func!(
+    parse_hex_int,
+    radix = 16,
+    strip = |s| {
+        debug_assert_eq!(&s[0..1], "0");
+        debug_assert!(matches!(&s[1..2], "x" | "X"));
+        s
+    }
+);
 
+int_parse_func!(
+    parse_bin_int,
+    radix = 2,
+    strip = |s| {
+        debug_assert_eq!(&s[0..1], "0");
+        debug_assert!(matches!(&s[1..2], "b" | "B"));
+        &s[2..]
+    }
+);
+
+int_parse_func!(
+    parse_octal_int,
+    radix = 8,
+    strip = |s| {
+        debug_assert_eq!(&s[0..1], "0");
+        debug_assert!(matches!(&s[1..2], "o" | "O"));
+        &s[2..]
+    }
+);
 fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<(StringInfo, &'a str), StringError> {
     /*
      * Already parsed:
