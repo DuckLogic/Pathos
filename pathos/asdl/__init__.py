@@ -33,8 +33,7 @@ __all__ = [
 # See the EBNF at the top of the file to understand the logical connection
 # between the various node types.
 
-builtin_types = {'identifier', 'string', 'bytes', 'int', 'object', 'singleton',
-                 'constant'}
+builtin_types = {'identifier', 'string', 'int', 'constant'}
 
 class AST:
     def __repr__(self):
@@ -71,6 +70,16 @@ class Field(AST):
         self.name = name
         self.seq = seq
         self.opt = opt
+
+    def __str__(self):
+        if self.seq:
+            extra = "*"
+        elif self.opt:
+            extra = "?"
+        else:
+            extra = ""
+
+        return "{}{} {}".format(self.type, extra, self.name)
 
     def __repr__(self):
         if self.seq:
@@ -293,8 +302,8 @@ class ASDLParser:
                 # More constructors
                 self._advance()
                 sumlist.append(Constructor(
-                    self._match(TokenKind.ConstructorId),
-                    self._parse_optional_fields()))
+                                self._match(TokenKind.ConstructorId),
+                                self._parse_optional_fields()))
             return Sum(sumlist, self._parse_optional_attributes())
 
     def _parse_product(self):
@@ -307,7 +316,7 @@ class ASDLParser:
             typename = self._advance()
             is_seq, is_opt = self._parse_optional_field_quantifier()
             id = (self._advance() if self.cur_token.kind in self._id_kinds
-                  else None)
+                                  else None)
             fields.append(Field(typename, id, seq=is_seq, opt=is_opt))
             if self.cur_token.kind == TokenKind.RParen:
                 break
@@ -361,8 +370,8 @@ class ASDLParser:
         * Reads in the next token
         """
         if (isinstance(kind, tuple) and self.cur_token.kind in kind or
-                self.cur_token.kind == kind
-        ):
+            self.cur_token.kind == kind
+            ):
             value = self.cur_token.value
             self._advance()
             return value
