@@ -1,5 +1,6 @@
 [package]
-name = "pathos"
+name = "pathos-python-parser"
+description = "A straightforward and fast Python parser"
 version = "0.1.0"
 authors = ["Techcable <Techcable@techcable.net>"]
 edition = "2018"
