@@ -1,10 +1,100 @@
 //! A lexer for python-style source code
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
-use std::cell::RefCell;
 use bumpalo::Bump;
 
 use either::Either;
+
+#[macro_export]
+macro_rules! tk {
+    ('\n') => (Token::Newline);
+    (False) => (Token::False);
+    (await) => (Token::Await);
+    (else) => (Token::Else);
+    (import) => (Token::Import);
+    (pass) => (Token::Pass);
+    (None) => (Token::None);
+    (True) => (Token::True);
+    (class) => (Token::Class);
+    (finally) => (Token::Finallly);
+    (is) => (Token::Is);
+    (return) => (Token::Return);
+    (and) => (Token::And);
+    (continue) => (Token::Continue);
+    (for) => (Token::For);
+    (lambda) => (Token::Lambda);
+    (try) => (Token::Try);
+    (as) => (Token::As);
+    (def) => (Token::Def);
+    (from) => (Token::From);
+    (nonlocal) => (Token::Nonlocal);
+    (while) => (Token::While);
+    (assert) => (Token::Assert);
+    (del) => (Token::Del);
+    (global) => (Token::Global);
+    (not) => (Token::Not);
+    (with) => (Token::With);
+    (async) => (Token::Async);
+    (elif) => (Token::Elif);
+    (if) => (Token::If);
+    (or) => (Token::Or);
+    (yield) => (Token::Yield);
+    (break) => (Token::Break);
+    (except) => (Token::Except);
+    (in) => (Token::In);
+    (raise) => (Token::Raise);
+    // ***************
+    //    Operators
+    // ***************
+    (+) => (Token::Plus);
+    (-) => (Token::Minus);
+    (*) => (Token::Star);
+    (**) => (Token::DoubleStar);
+    (/) => (Token::Slash);
+    (/ /) => (Token::DoubleSlash);
+    ("//") => (Token::DoubleSlash);
+    (%) => (Token::Percent);
+    (@) => (Token::At);
+    (<<) => (Token::LeftShift);
+    (>>) => (Token::RightShift);
+    (&) => (Token::Ampersand);
+    (|) => (Token::BitwiseOr);
+    (^) => (Token::BitwiseXor);
+    (~) => (Token::BitwiseInvert);
+    (:=) => (Token::AssignOperator);
+    (<) => (Token::LessThan);
+    (>) => (Token::GreaterThan);
+    (<=) => (Token::LessThanOrEqual);
+    (>=) => (Token::GreaterThanOrEqual);
+    (==) => (Token::DoubleEquals);
+    (!=) => (Token::NotEquals);
+    ('(') => (Token::OpenParen);
+    (')') => (Token::CloseParen);
+    ('[') => (Token::OpenBracket);
+    (']') => (Token::CloseBracket);
+    ('{') => (Token::OpenBrace);
+    ('}') => (Token::CloseBrace);
+    (,) => (Token::Comma);
+    (:) => (Token::Colon);
+    (.) => (Token::Period);
+    (;) => (Token::Semicolon);
+    (=) => (Token::Equals);
+    (->) => (Token::Arrow);
+    (+=) => (Token::PlusEquals);
+    (-=) => (Token::MinusEquals);
+    (*=) => (Token::StarEquals);
+    (/=) => (Token::SlashEquals);
+    (/ /=) => (Token::DoubleSlashEquals);
+    ("//=") => (Token::DoubleSlashEquals);
+    (%=) => (Token::PercentEquals);
+    (@=) => (Token::AtEquals);
+    (&=) => (Token::AndEquals);
+    (|=) => (Token::OrEquals);
+    (^=) => (Token::XorEquals);
+    (>>=) => (Token::RightShiftEquals);
+    (<<=) => (Token::LeftShiftEquals);
+    (**=) => (Token::DoubleStarEquals);
+}
 
 #[cfg(feature="num-bigint")]
 /// An arbitrary precision integer
@@ -18,7 +108,6 @@ pub struct BigInt {
     text: String
 }
 
-use hashbrown::HashMap;
 use logos::{Logos, Lexer};
 
 /// A python identifier
@@ -29,7 +118,6 @@ use logos::{Logos, Lexer};
 #[derive(Clone)]
 pub struct Ident<'a> {
     text: &'a str,
-    hash: u64,
     /// A monotonically increasing id
     /// for this identifier
     id: u32
@@ -40,16 +128,29 @@ impl Borrow<str> for Ident<'_> {
         self.text
     }
 }
+impl Borrow<str> for &'_ Ident<'_> {
+    #[inline]
+    fn borrow(&self) -> &str {
+        self.text
+    }
+}
 impl Hash for Ident<'_> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+        std::ptr::hash(self.text, state)
     }
 }
 impl Eq for Ident<'_> {}
 impl PartialEq for Ident<'_> {
     #[inline]
     fn eq(&self, other: &Ident) -> bool {
+        debug_assert_eq!(
+            std::ptr::eq(self.text, other.text),
+            self.text == other.text,
+            concat!("Pointer equality gave different result than",
+            " value equality for {:?} and {:?}, {0:p} and {1:p}"),
+            self.text, other.text,
+        );
         std::ptr::eq(self.text, other.text)
     }
 }
@@ -59,14 +160,11 @@ impl std::fmt::Debug for Ident<'_> {
     }
 }
 struct RawLexerState {
-    starting_line: bool,
 }
 impl Default for RawLexerState {
     #[inline]
     fn default() -> Self {
         RawLexerState {
-            // We start out beginning a line
-            starting_line: true,
         }
     }
 }
@@ -78,11 +176,11 @@ pub enum LexError {
 
 pub struct PythonLexer<'src, 'arena: 'src> {
     arena: &'arena Bump,
-    text: &'src str,
     raw_lexer: Lexer<'src, RawToken<'src>>,
-    known_idents: hashbrown::HashMap<&'arena Ident<'arena>, ()>,
+    known_idents: hashbrown::HashMap<&'src str, &'arena Ident<'arena>>,
     pending_indentation_change: isize,
-    indent_stack: Vec<usize>
+    indent_stack: Vec<usize>,
+    starting_line: bool,
 }
 
 macro_rules! translate_tokens {
@@ -100,19 +198,20 @@ macro_rules! translate_tokens {
 impl<'src, 'arena> PythonLexer<'src, 'arena> {
     pub fn new(arena: &'arena Bump, text: &'src str) -> Self {
         PythonLexer {
-            arena, text,
+            arena,
             raw_lexer: RawToken::lexer(text),
             known_idents: ::hashbrown::HashMap::default(),
             pending_indentation_change: 0,
-            indent_stack: vec![0]
+            indent_stack: vec![0],
+            starting_line: true
         }
     }
     pub fn reset(&mut self, text: &'src str) {
-        self.text = text;
         self.raw_lexer = RawToken::lexer(text);
         self.pending_indentation_change = 0;
         self.indent_stack.clear();
         self.indent_stack.push(0);
+        self.starting_line = true;
     }
     pub fn lex_all(&mut self, text: &'src str) -> Result<Vec<Token<'arena>>, LexError> {
         self.reset(text);
@@ -123,27 +222,21 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
         Ok(res)
     } 
     pub fn create_ident(&mut self, text: &'src str) -> &'arena Ident<'arena> {
-        use std::hash::BuildHasher;
         use std::convert::TryFrom;
         let old_len = u32::try_from(self.known_idents.len())
-            .expect("Too many identifiers");
-        let mut hasher = self.known_idents.hasher().build_hasher();
-        hasher.write(text.as_bytes());
-        let hash = hasher.finish();
-        match self.known_idents.raw_entry_mut().from_hash(hash, |other| {
-            other.hash == hash && other.text == text
-        }) {
-            hashbrown::hash_map::RawEntryMut::Occupied(entry) => {
-                *entry.key()
+            .expect("Too many ids");
+        match self.known_idents.entry(text) {
+            hashbrown::hash_map::Entry::Occupied(entry) => {
+                *entry.get()
             },
-            hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
+            hashbrown::hash_map::Entry::Vacant(entry) => {
                 let allocated_text = self.arena.alloc_str(text);
-                let key = self.arena.alloc(Ident {
-                    text: allocated_text, hash, id: old_len
+                let allocated = self.arena.alloc(Ident {
+                    text: allocated_text, id: old_len
                 });
-                entry.insert_hashed_nocheck(hash, key, ());
+                entry.insert(allocated);
                 assert!(self.known_idents.len() > old_len as usize);
-                key
+                allocated
             }
         }
     }
@@ -159,40 +252,62 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             } else { unreachable!() }
         }
         'yum: loop {
+            if self.starting_line {
+                self.starting_line = false;
+                let amount = match self.raw_lexer.remainder().bytes()
+                        .position(|b| b != b' ' && b != b'\t')  {
+                    Some(amount) => amount,
+                    None => 0
+                };
+                let actual_byte = self.raw_lexer.remainder().as_bytes().get(amount).cloned();
+                self.raw_lexer.bump(amount);
+                if actual_byte == Some(b'\n') {
+                    // It's an entirely blank line. Skip it
+                    self.raw_lexer.bump(1);
+                    self.starting_line = true;
+                    continue 'yum;
+                } else if actual_byte == Some(b'#') {
+                    /*
+                     * It's a comment. Skip till the line end
+                     * and don't count it towards indentation.
+                     */
+                    let remaining = self.raw_lexer.remainder();
+                    let line_end = ::memchr::memchr(b'\n', remaining.as_bytes())
+                        .unwrap_or(remaining.len());
+                    self.raw_lexer.bump(line_end);
+                    self.starting_line = true;
+                    continue 'yum;
+                }
+                let current_top = *self.indent_stack.last().unwrap();
+                if amount > current_top {
+                    self.indent_stack.push(amount);
+                    return Ok(Some(Token::IncreaseIndent));
+                } else if amount < current_top {
+                    assert_eq!(self.pending_indentation_change, 0);
+                    while dbg!(amount) < dbg!(*self.indent_stack.last().unwrap()) {
+                        self.indent_stack.pop();
+                        self.pending_indentation_change -= 1;
+                        assert!(!self.indent_stack.is_empty());
+                    }
+                    assert!(self.pending_indentation_change < 0);
+                    self.pending_indentation_change += 1;
+                    assert!(!self.indent_stack.is_empty());
+                    return Ok(Some(Token::DecreaseIndent));
+                } else {
+                    assert_eq!(amount, current_top);
+                }
+            }
             // Lets do some post processing ;)
             let token = match self.raw_lexer.next() {
                 Some(val) => val,
                 None => return Ok(None) // EOF
             };
             return Ok(Some(translate_tokens!(token;
-                /*
-                 * The 'raw' lexer filters out all spaces and tabs
-                 * unless it is at the start of a line.
-                 * However, it doesn't do the implicit comparison
-                 * against the stack as described here:
-                 * https://docs.python.org/3.9/reference/lexical_analysis.html#indentation
-                 */
-                RawIndent (amount) => {
-                    let current_top = *self.indent_stack.last().unwrap();
-                    if amount == current_top {
-                        continue 'yum;
-                    } else if amount > current_top {
-                        self.indent_stack.push(amount);
-                        return Ok(Some(Token::IncreaseIndent));
-                    } else {
-                        assert_eq!(self.pending_indentation_change, 0);
-                        while amount < *self.indent_stack.last().unwrap() {
-                            self.indent_stack.pop();
-                            self.pending_indentation_change -= 1;
-                            assert!(!self.indent_stack.is_empty());
-                        }
-                        assert!(self.pending_indentation_change < 0);
-                        self.pending_indentation_change += 1;
-                        assert!(!self.indent_stack.is_empty());
-                        return Ok(Some(Token::DecreaseIndent));
-                    }
+                RawNewline => {
+                    self.starting_line = true;
+                    // TODO: Do we need to do anything else?
+                    Token::Newline
                 },
-                RawNewline => Token::Newline, // TODO: Do we need to do anything else?
                 Integer (inner) => {
                     match inner {
                         Either::Left(int) => Token::IntegerLiteral(int),
@@ -220,6 +335,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 Continue, For, Lambda, Try, As, Def, From,
                 Nonlocal, While, Assert, Del, Global, Not,
                 With, Async, Elif, If, Or, Yield,
+                Break, Except, In, Raise,
                 // operators
                 Plus, Minus, Star, DoubleStar, Slash, DoubleSlash,
                 Percent, At, LeftShift, RightShift, Ampersand,
@@ -274,6 +390,10 @@ pub enum Token<'arena> {
     If, // 28
     Or, // 29
     Yield, // 30
+    Break, // 31
+    Except, // 32
+    In, // 33
+    Raise, // 34
     // ***************
     //    Operators
     // ***************
@@ -412,6 +532,14 @@ enum RawToken<'src> {
     Or, // 29
     #[token("yield")]
     Yield, // 30
+    #[token("break")]
+    Break, // 31
+    #[token("except")]
+    Except, // 32
+    #[token("in")]
+    In, // 33
+    #[token("raise")]
+    Raise, // 34
     // ***************
     //    Operators
     // ***************
@@ -534,20 +662,15 @@ enum RawToken<'src> {
     FloatLiteral(f64),
     #[error]
     #[token(r#"#"#, skip_comment)]
+    #[regex(r"\p{Whitespace}", logos::skip)] // Skip whitespace
     Error,
     /// A raw newline
     ///
     /// NOTE: This is implicitly skipped if there is a backslash
     /// right before it.
-    #[regex(r"(\n|\r\n)", newline)]
+    #[regex(r"(\n|\r\n)")]
     #[regex(r"\\(\n|\r\n)", logos::skip)]
     RawNewline,
-    /// Raw indentation at the start of a newline
-    ///
-    /// The value of the variant indicates the amount of
-    /// indentation (both tabs and spaces).
-    #[regex(r"[\t ]+", raw_indentation)]
-    RawIndent(usize),
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -626,28 +749,6 @@ fn lex_float<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> f64 {
         lex.slice().as_bytes(),
         ::lexical_core::NumberFormat::PYTHON3_LITERAL,
     ).unwrap()
-}
-fn raw_indentation<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Filter<usize> {
-    if !lex.extras.starting_line {
-        return logos::Filter::Skip;
-    }
-    let mut count = 0;
-    for b in lex.slice().bytes() {
-        match b {
-            b' ' => {
-                count += 1;
-            },
-            b'\t' => {
-                count += count % 8;
-            }
-            _ => unreachable!("Unexpected byte: {:?}", b),
-        }
-    }
-    assert!(count > 0);
-    logos::Filter::Emit(count)
-}
-fn newline<'a>(lex: &mut Lexer<'a, RawToken<'a>>) {
-    lex.extras.starting_line = true;
 }
 #[inline]
 fn ident<'src>(lex: &mut Lexer<'src, RawToken<'src>>) -> &'src str {
@@ -912,23 +1013,109 @@ enum StringError {
 #[cfg(test)]
 mod test {
     use super::*;
+    #[cfg(test)]
+    use pretty_assertions::{assert_eq,};
+    macro_rules! munch_token {
+        ($lexer:expr, $res:expr; Ident($text:literal), $($remaining:tt)*) => {
+            $res.push(Token::Ident($lexer.create_ident($text)));
+            munch_token!($lexer, $res; $($remaining)*)
+        };
+        ($lexer:expr, $res:expr; $name:ident, $($remaining:tt)*) => {
+            $res.push(Token::$name);
+            munch_token!($lexer, $res; $($remaining)*)
+        };
+        ($lexer:expr, $res:expr; tk!($first:tt $($second:tt)? $($third:tt)?), $($remaining:tt)*) => {
+            $res.push(tk!($first $($second)? $($third)?));
+            munch_token!($lexer, $res; $($remaining)*)
+        };
+        ($lexer:expr, $res:expr; IntegerLiteral($val:literal), $($remaining:tt)*) => {
+            $res.push(Token::IntegerLiteral($val));
+            munch_token!($lexer, $res; $($remaining)*)
+        };
+        ($lexer:expr, $res:expr;) => ()
+    }
+    macro_rules! test_lex {
+        ($text:expr, $($om:tt)*) => {{
+            let arena = Bump::new();
+            let mut lexer = PythonLexer::new(&arena, "");
+            let mut res = Vec::new();
+            munch_token!(lexer, res; $($om)*);
+            assert_eq!(
+                lexer.lex_all($text).unwrap(),
+                res,
+                "Unexpected parse for text:\n{}", $text
+            );
+        }}
+    }
+    macro_rules! lines {
+        ($($line:literal),*) => {
+            concat!($($line, "\n"),*)
+        }
+    }
     #[test]
     fn basic() {
-        let arena = Bump::new();
-        let mut lexer = PythonLexer::new(&arena, "");
-        assert_eq!(
-            lexer.lex_all("def foo(a, b, cat)").unwrap(),
-            vec![
-                Token::Def,
-                Token::Ident(lexer.create_ident("foo")),
-                Token::OpenParen,
-                Token::Ident(lexer.create_ident("a")),
-                Token::Comma,
-                Token::Ident(lexer.create_ident("b")),
-                Token::Comma,
-                Token::Ident(lexer.create_ident("cat")),
-                Token::CloseParen
-            ]
+        test_lex!(
+            "def foo(a, b, cat)",
+            Def, Ident("foo"), OpenParen,
+            Ident("a"), Comma,
+            Ident("b"), Comma, Ident("cat"),
+            CloseParen,
         );
+    }
+    #[test]
+    fn indentation() {
+        test_lex!(
+            lines!(
+                r##"class Test:"##,
+                r##"    first: int"##,
+                r##""##,
+                r##"    def chao(self):"##,
+                r##"        pass"##,
+                r##""##
+            ),
+            tk!(class), Ident("Test"), tk!(:), tk!('\n'),
+            IncreaseIndent, Ident("first"), tk!(:),
+            Ident("int"), tk!('\n'),
+            tk!(def), Ident("chao"),
+            tk!('('), Ident("self"), tk!(')'), tk!(:),
+            tk!('\n'), IncreaseIndent, tk!(pass), Newline,
+            DecreaseIndent, DecreaseIndent,
+        );
+        /*
+         * This is the official example of 'confusing'
+         * indentation from the docs:
+         * https://docs.python.org/3.9/reference/lexical_analysis.html#indentation
+         */
+        test_lex!(
+            r##"def perm(l):
+        # Compute the list of all permutations of l
+    if len(l) <= 1:
+                  return [l]
+    r = []
+    for i in range(len(l)):
+             s = l[:i] + l[i+1:]
+             p = perm(s)
+             for x in p:
+              r.append(l[i:i+1] + x)
+    return r"##,
+            tk!(def), Ident("perm"), tk!('('), Ident("l"), tk!(')'),
+            tk!(:), tk!('\n'), IncreaseIndent, tk!(if), Ident("len"), tk!('('),
+            Ident("l"), tk!(')'), tk!(<=), IntegerLiteral(1), tk!(:), tk!('\n'),
+            IncreaseIndent, tk!(return), tk!('['), Ident("l"), tk!(']'), tk!('\n'),
+            DecreaseIndent, Ident("r"), tk!(=), tk!('['), tk!(']'), tk!('\n'),
+            tk!(for), Ident("i"), tk!(in), Ident("range"), tk!('('),
+                Ident("len"), tk!('('), Ident("l"), tk!(')'), tk!(')'),
+                tk!(:), tk!('\n'), IncreaseIndent,
+            Ident("s"), tk!(=), Ident("l"), tk!('['), tk!(:), Ident("i"),
+                tk!(']'), tk!(+), Ident("l"), tk!('['), Ident("i"), tk!(+),
+                IntegerLiteral(1), tk!(:), tk!(']'), Newline,
+            Ident("p"), tk!(=), Ident("perm"), tk!('('), Ident("s"), tk!(')'), tk!('\n'),
+            tk!(for), Ident("x"), tk!(in), Ident("p"), tk!(:), tk!('\n'),
+            IncreaseIndent, Ident("r"), tk!(.), Ident("append"), tk!('('),
+                Ident("l"), tk!('['), Ident("i"), tk!(:), Ident("i"), tk!(+),
+                IntegerLiteral(1), tk!(']'), tk!(+), Ident("x"), tk!(')'), tk!('\n'),
+            DecreaseIndent, DecreaseIndent,
+            tk!(return), Ident("r"),
+        )
     }
 }
