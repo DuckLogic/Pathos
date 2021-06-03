@@ -96,18 +96,7 @@ macro_rules! tk {
     (**=) => (Token::DoubleStarEquals);
 }
 
-#[cfg(feature="num-bigint")]
-/// An arbitrary precision integer
-pub type BigInt = num_bigint::BigInt;
-#[cfg(fefature="rug")]
-/// A rug BigInt
-pub type BigInt = rug::Integer;
-#[cfg(not(any(feature="num-bigint", feature="rug")))]
-/// How integers are stored if big integers are disabled
-pub struct BigInt {
-    text: String
-}
-
+use crate::BigInt;
 use logos::{Logos, Lexer};
 
 /// A python identifier
@@ -684,6 +673,15 @@ pub enum StringPrefix {
     /// A byte string prefix
     Bytes
 }
+impl StringPrefix {
+    pub fn prefix_char(self) -> char {
+        match self {
+            StringPrefix::Formatted => 'f',
+            StringPrefix::Unicode => 'u',
+            StringPrefix::Bytes => 'b'
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum QuoteStyle {
     Double,
@@ -700,6 +698,10 @@ impl QuoteStyle {
             QuoteStyle::Double |
             QuoteStyle::DoubleLong => b'"',
         }
+    }
+    #[inline]
+    pub fn start_char(self) -> char {
+        self.start_byte() as char
     }
     #[inline]
     pub fn text(self) -> &'static str {
@@ -722,16 +724,19 @@ impl QuoteStyle {
 }
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StringInfo<'src> {
+    pub style: StringStyle,
+    /// The original text of this string.
+    ///
+    /// Backslashes have not been interpreted
+    pub original_text: &'src str
+}
+pub struct StringStyle {
     /// An explicit string prefix,
     /// or none if it's just a plain string
     pub prefix: Option<StringPrefix>,
     /// True if the string is also a raw string
     pub raw: bool,
-    pub quote_style: QuoteStyle,
-    /// The original text of this string.
-    ///
-    /// Backslashes have not been interpreted
-    pub original_text: &'src str
+    pub quote_style: QuoteStyle
 }
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
@@ -864,7 +869,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
      * 1. Optionally: A prefix
      * 2. A string start, either triple string or single string
      */
-    let mut info = {
+    let style = {
         let slice = lex.slice();
         /*
          * NOTE: The lexer isn't affected by string prefixes.
@@ -941,7 +946,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
             r#"'''"# => QuoteStyle::SingleLong,
             _ => unreachable!("Unexpected chars")
         };
-        StringInfo { prefix, raw, quote_style, original_text: "" }
+        StringStyle { prefix, raw, quote_style, }
     };
     /*
      * NOTE: This starts at the end of the
@@ -952,8 +957,8 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
      * for single and double quotes respectively.
      */
     let remaining_bytes = lex.remainder().as_bytes();
-    let expected_closing_text = info.quote_style.text();
-    for index in ::memchr::memchr2_iter(info.quote_style.start_byte(), b'\n', remaining_bytes) {
+    let expected_closing_text = style.quote_style.text();
+    for index in ::memchr::memchr2_iter(style.quote_style.start_byte(), b'\n', remaining_bytes) {
         /*
          * NOTE: One of the coolest properties of UTF8 is
          * that if a valid UTF8 substring exists an index `i`,
@@ -982,8 +987,8 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
                 return Err(StringError::ForbiddenNewline);
             }
         }
-        let end = if info.quote_style.is_triple_string() {
-            match (info.quote_style, remaining_bytes.get(index..index + 3)) {
+        let end = if style.quote_style.is_triple_string() {
+            match (style.quote_style, remaining_bytes.get(index..index + 3)) {
                 (QuoteStyle::DoubleLong, Some(br#"""""#)) |
                 (QuoteStyle::SingleLong, Some(br"'''")) => {
                     // We found our closing bytes.
@@ -999,8 +1004,9 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
         };
         debug_assert_eq!(&remaining_bytes[index..end], expected_closing_text.as_bytes());
         lex.bump(end);
-        info.original_text = lex.slice();
-        return Ok(info);
+        return Ok(StringInfo {
+            style, original_text: lex.slice(),
+        });
     }
     Err(StringError::NoClosingQuote) // no closing paren
 }
