@@ -25,6 +25,11 @@ ordered-float = "2.5"
 # Better derive
 educe = "0.4"
 
+# Parser combinators, used as the basis of
+# our parsing system.
+[dependencies.combine]
+version = "4.5"
+
 [dependencies.lexical-core]
 version = "0.7.6"
 # Used for parsing floats
