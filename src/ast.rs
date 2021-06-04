@@ -171,4 +171,4 @@ pub trait Spanned {
     fn span(&self) -> Span;
 }
 
-include!("ast_gen.rs");
+include!(concat!(env!("OUT_DIR"), "/ast_gen.rs"));
