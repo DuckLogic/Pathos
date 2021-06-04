@@ -2,6 +2,7 @@
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 use bumpalo::Bump;
+use std::fmt;
 
 use either::Either;
 
@@ -312,9 +313,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 },
                 String(s) => {
                     Token::StringLiteral(self.arena.alloc(StringInfo {
-                        prefix: s.prefix,
-                        raw: s.raw,
-                        quote_style: s.quote_style,
+                        style: s.style,
                         original_text: self.arena.alloc_str(s.original_text)
                     }))
                 },
@@ -662,7 +661,7 @@ enum RawToken<'src> {
     RawNewline,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum StringPrefix {
     /// A format string prefix.
     Formatted,
@@ -689,7 +688,69 @@ pub enum QuoteStyle {
     DoubleLong,
     SingleLong,
 }
+#[non_exhaustive]
+pub enum UnicodeEscapeStyle {
+    Simple,
+    ForceEscape
+}
+impl UnicodeEscapeStyle {
+    pub const EXPLICIT: UnicodeEscapeStyle = UnicodeEscapeStyle::ForceEscape;
+}
+impl UnicodeEscapeStyle {
+    #[inline]
+    fn default() -> UnicodeEscapeStyle {
+        UnicodeEscapeStyle::Simple
+    }
+}
 impl QuoteStyle {
+    pub fn escape_char<F: std::fmt::Write>(
+        &self, c: char,
+        out: &mut F,
+        unicode_style: UnicodeEscapeStyle
+    ) -> fmt::Result {
+        match c {
+            '\t' => out.write_str("\\t"),
+            '\r' => out.write_str("\\r"),
+            '\n' => out.write_str("\\n"),
+            '"' => {
+                if self.start_char() == '"' {
+                    out.write_str("\\\"")
+                } else {
+                    out.write_char('"')
+                }
+            },
+            '\'' => {
+                if self.start_char() == '\'' {
+                    out.write_str("\\'")
+                } else {
+                    out.write_char('\'')
+                }
+            },
+            '\\' => {
+                out.write_str("\\\\")
+            },
+            '\u{20}'..='\u{7e}' => {
+                out.write_char(c)
+            },
+            _ => {
+                match unicode_style {
+                    UnicodeEscapeStyle::Simple => {
+                        if c.is_alphanumeric() {
+                            return out.write_char(c);
+                        }
+                    },
+                    UnicodeEscapeStyle::ForceEscape => {}
+                }
+                // Fallthrough to unicode escape
+                if c as u64 <= 0xFFFF {
+                    write!(out, "\\u{:04X}", c as u64)
+                } else {
+                    assert!(c as u64 <= 0xFFFF_FFFF);
+                    write!(out, "\\U{:08X}", c as u64)
+                }
+            }
+        }
+    }
     #[inline]
     pub fn start_byte(self) -> u8 {
         match self {
@@ -730,6 +791,7 @@ pub struct StringInfo<'src> {
     /// Backslashes have not been interpreted
     pub original_text: &'src str
 }
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct StringStyle {
     /// An explicit string prefix,
     /// or none if it's just a plain string
@@ -980,7 +1042,7 @@ fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, S
             continue; // Skip escaped quote (or newline)
         }
         if remaining_bytes[index] == b'\n' {
-            if info.quote_style.is_triple_string() {
+            if style.quote_style.is_triple_string() {
                 continue; // just ignore the newline
             } else {
                 // newline is an error...
