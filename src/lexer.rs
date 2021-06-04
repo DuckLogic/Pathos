@@ -2,7 +2,6 @@
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 use bumpalo::Bump;
-use std::fmt;
 
 use either::Either;
 
@@ -97,8 +96,9 @@ macro_rules! tk {
     (**=) => (Token::DoubleStarEquals);
 }
 
-use crate::BigInt;
 use logos::{Logos, Lexer};
+
+use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 
 /// A python identifier
 ///
@@ -661,128 +661,6 @@ enum RawToken<'src> {
     RawNewline,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub enum StringPrefix {
-    /// A format string prefix.
-    Formatted,
-    /// An explicit unicode prefix.
-    ///
-    /// Note that this is redundant on Python 3. 
-    Unicode,
-    /// A byte string prefix
-    Bytes
-}
-impl StringPrefix {
-    pub fn prefix_char(self) -> char {
-        match self {
-            StringPrefix::Formatted => 'f',
-            StringPrefix::Unicode => 'u',
-            StringPrefix::Bytes => 'b'
-        }
-    }
-}
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum QuoteStyle {
-    Double,
-    Single,
-    DoubleLong,
-    SingleLong,
-}
-#[non_exhaustive]
-pub enum UnicodeEscapeStyle {
-    Simple,
-    ForceEscape
-}
-impl UnicodeEscapeStyle {
-    pub const EXPLICIT: UnicodeEscapeStyle = UnicodeEscapeStyle::ForceEscape;
-}
-impl UnicodeEscapeStyle {
-    #[inline]
-    fn default() -> UnicodeEscapeStyle {
-        UnicodeEscapeStyle::Simple
-    }
-}
-impl QuoteStyle {
-    pub fn escape_char<F: std::fmt::Write>(
-        &self, c: char,
-        out: &mut F,
-        unicode_style: UnicodeEscapeStyle
-    ) -> fmt::Result {
-        match c {
-            '\t' => out.write_str("\\t"),
-            '\r' => out.write_str("\\r"),
-            '\n' => out.write_str("\\n"),
-            '"' => {
-                if self.start_char() == '"' {
-                    out.write_str("\\\"")
-                } else {
-                    out.write_char('"')
-                }
-            },
-            '\'' => {
-                if self.start_char() == '\'' {
-                    out.write_str("\\'")
-                } else {
-                    out.write_char('\'')
-                }
-            },
-            '\\' => {
-                out.write_str("\\\\")
-            },
-            '\u{20}'..='\u{7e}' => {
-                out.write_char(c)
-            },
-            _ => {
-                match unicode_style {
-                    UnicodeEscapeStyle::Simple => {
-                        if c.is_alphanumeric() {
-                            return out.write_char(c);
-                        }
-                    },
-                    UnicodeEscapeStyle::ForceEscape => {}
-                }
-                // Fallthrough to unicode escape
-                if c as u64 <= 0xFFFF {
-                    write!(out, "\\u{:04X}", c as u64)
-                } else {
-                    assert!(c as u64 <= 0xFFFF_FFFF);
-                    write!(out, "\\U{:08X}", c as u64)
-                }
-            }
-        }
-    }
-    #[inline]
-    pub fn start_byte(self) -> u8 {
-        match self {
-            QuoteStyle::Single |
-            QuoteStyle::SingleLong => b'\'',
-            QuoteStyle::Double |
-            QuoteStyle::DoubleLong => b'"',
-        }
-    }
-    #[inline]
-    pub fn start_char(self) -> char {
-        self.start_byte() as char
-    }
-    #[inline]
-    pub fn text(self) -> &'static str {
-        match self {
-            QuoteStyle::DoubleLong => r#"""""#,
-            QuoteStyle::SingleLong => r"'''",
-            QuoteStyle::Double => r#"""#,
-            QuoteStyle::Single => r"'",
-        }
-    }
-    #[inline]
-    pub fn is_triple_string(self) -> bool {
-        match self {
-            QuoteStyle::Single |
-            QuoteStyle::Double => false,
-            QuoteStyle::SingleLong |
-            QuoteStyle::DoubleLong => true,
-        }
-    }
-}
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct StringInfo<'src> {
     pub style: StringStyle,
@@ -790,15 +668,6 @@ pub struct StringInfo<'src> {
     ///
     /// Backslashes have not been interpreted
     pub original_text: &'src str
-}
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub struct StringStyle {
-    /// An explicit string prefix,
-    /// or none if it's just a plain string
-    pub prefix: Option<StringPrefix>,
-    /// True if the string is also a raw string
-    pub raw: bool,
-    pub quote_style: QuoteStyle
 }
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
