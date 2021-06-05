@@ -1,7 +1,8 @@
 //! A lexer for python-style source code
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
-use bumpalo::Bump;
+
+use crate::alloc::{Allocator, AllocError};
 
 use either::Either;
 
@@ -98,6 +99,7 @@ macro_rules! tk {
 
 use logos::{Logos, Lexer};
 
+use crate::ast::Span;
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 
 /// A python identifier
@@ -105,12 +107,18 @@ use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 /// These are interned, so there should
 /// never be any duplicates within the same
 /// source file.
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct Ident<'a> {
     text: &'a str,
     /// A monotonically increasing id
     /// for this identifier
     id: u32
+}
+impl<'a> Ident<'a> {
+    #[inline]
+    pub fn text(&self) -> &'a str {
+        self.text
+    }
 }
 impl Borrow<str> for Ident<'_> {
     #[inline]
@@ -161,11 +169,18 @@ impl Default for RawLexerState {
 
 #[derive(Debug)]
 pub enum LexError {
-    Unknown
+    InvalidToken,
+    AllocFailed
+}
+impl From<AllocError> for LexError {
+    #[inline]
+    fn from(e: AllocError) -> LexError {
+        LexError::AllocFailed
+    }
 }
 
 pub struct PythonLexer<'src, 'arena: 'src> {
-    arena: &'arena Bump,
+    arena: &'arena Allocator,
     raw_lexer: Lexer<'src, RawToken<'src>>,
     known_idents: hashbrown::HashMap<&'src str, &'arena Ident<'arena>>,
     pending_indentation_change: isize,
@@ -186,7 +201,7 @@ macro_rules! translate_tokens {
     (handler for $name:ident) => (Token::$name);
 }
 impl<'src, 'arena> PythonLexer<'src, 'arena> {
-    pub fn new(arena: &'arena Bump, text: &'src str) -> Self {
+    pub fn new(arena: &'arena Allocator, text: &'src str) -> Self {
         PythonLexer {
             arena,
             raw_lexer: RawToken::lexer(text),
@@ -210,25 +225,30 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             res.push(token);
         }
         Ok(res)
-    } 
-    pub fn create_ident(&mut self, text: &'src str) -> &'arena Ident<'arena> {
+    }
+    #[inline]
+    pub fn current_span(&self) -> Span {
+        let raw = self.raw_lexer.span();
+        Span { start: raw.start, end: raw.end }
+    }
+    pub fn create_ident(&mut self, text: &'src str) -> Result<&'arena Ident<'arena>, AllocError> {
         use std::convert::TryFrom;
         let old_len = u32::try_from(self.known_idents.len())
             .expect("Too many ids");
-        match self.known_idents.entry(text) {
+        Ok(match self.known_idents.entry(text) {
             hashbrown::hash_map::Entry::Occupied(entry) => {
                 *entry.get()
             },
             hashbrown::hash_map::Entry::Vacant(entry) => {
-                let allocated_text = self.arena.alloc_str(text);
+                let allocated_text = self.arena.alloc_str(text)?;
                 let allocated = self.arena.alloc(Ident {
                     text: allocated_text, id: old_len
-                });
+                })?;
                 entry.insert(allocated);
                 assert!(self.known_idents.len() > old_len as usize);
                 allocated
             }
-        }
+        })
     }
     #[allow(unused)]
     pub fn next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
@@ -301,11 +321,11 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 Integer (inner) => {
                     match inner {
                         Either::Left(int) => Token::IntegerLiteral(int),
-                        Either::Right(int) => Token::BigIntegerLiteral(self.arena.alloc(int))
+                        Either::Right(int) => Token::BigIntegerLiteral(self.arena.alloc(int)?)
                     }
                 },
                 Identifier (text) => {
-                    Token::Ident(self.create_ident(text))
+                    Token::Ident(self.create_ident(text)?)
                 },
                 FloatLiteral (f) => Token::FloatLiteral(f),
                 Error => {
@@ -314,8 +334,8 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 String(s) => {
                     Token::StringLiteral(self.arena.alloc(StringInfo {
                         style: s.style,
-                        original_text: self.arena.alloc_str(s.original_text)
-                    }))
+                        original_text: self.arena.alloc_str(s.original_text)?
+                    })?)
                 },
                 // keywords
                 False, Await, Else, Import, Pass, None,
@@ -659,6 +679,14 @@ enum RawToken<'src> {
     #[regex(r"(\n|\r\n)")]
     #[regex(r"\\(\n|\r\n)", logos::skip)]
     RawNewline,
+}
+
+impl<'src> RawToken<'src> {
+
+}
+
+impl<'src> RawToken<'src> {
+
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
