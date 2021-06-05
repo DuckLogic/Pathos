@@ -1,7 +1,6 @@
 //! A lexer for python-style source code
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
-use std::fmt::{self, Formatter, Display};
 use bumpalo::Bump;
 
 use either::Either;
@@ -163,12 +162,6 @@ impl Default for RawLexerState {
 #[derive(Debug)]
 pub enum LexError {
     Unknown
-}
-impl std::error::Error for LexError {}
-impl Display for LexError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.write_str("Invalid token")
-    }
 }
 
 pub struct PythonLexer<'src, 'arena: 'src> {
@@ -459,67 +452,82 @@ pub enum Token<'arena> {
     Newline,
 }
 
-macro_rules! define_keywords {
-    ($($name:ident => $text:literal),*) => {
-        #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-        pub enum Keyword {
-            $($name),*
-        }
-        impl Keyword {
-            const TABLE: &[&str] = &[$($text),*];
-            #[inline]
-            pub fn text(self) -> &'static str {
-                Keyword::TABLE[self as usize]
-            }
-        }
-    };
-}
-
-define_keywords! {
-    False => "False",
-    Await => "await",
-    Else => "else",
-    Import => "import",
-    Pass => "pass",
-    None => "None",
-    True => "True",
-    Class => "class",
-    Finally => "finally",
-    Is => "is",
-    Return => "return",
-    And => "and",
-    Continue => "continue",
-    For => "for",
-    Lambda => "lambda",
-    Try => "try",
-    As => "as",
-    Def => "def",
-    From => "from",
-    Nonlocal => "nonlocal",
-    While => "while",
-    Assert => "assert",
-    Del => "del",
-    Global => "global",
-    Not => "not",
-    With => "with",
-    Async => "async",
-    Elif => "elif",
-    If => "if",
-    Or => "or",
-    Yield => "yield",
-    Break => "break",
-    Except => "except",
-    In => "in",
-    Raise => "raise"
-}
-
 #[derive(Logos, Debug, PartialEq)]
 #[logos(extras = RawLexerState)]
 enum RawToken<'src> {
     // ********I******
     //    Keywords
     // **************
-    
+    #[token("False")]
+    False, // 0
+    #[token("await")]
+    Await, // 1
+    #[token("else")]
+    Else, // 2
+    #[token("import")]
+    Import, // 3
+    #[token("pass")]
+    Pass, // 4
+    #[token("None")]
+    None, // 5
+    #[token("True")]
+    True, // 6
+    #[token("class")]
+    Class, // 7
+    #[token("finally")]
+    Finally, // 8
+    #[token("is")]
+    Is, // 9
+    #[token("return")]
+    Return, // 10
+    #[token("and")]
+    And, // 11
+    #[token("continue")]
+    Continue, // 12
+    #[token("for")]
+    For, // 13
+    #[token("lambda")]
+    Lambda, // 14
+    #[token("try")]
+    Try, // 15
+    #[token("as")]
+    As, // 16
+    #[token("def")]
+    Def, // 17
+    #[token("from")]
+    From, // 18
+    #[token("nonlocal")]
+    Nonlocal, // 19
+    #[token("while")]
+    While, // 20
+    #[token("assert")]
+    Assert, // 21
+    #[token("del")]
+    Del, // 22
+    #[token("global")]
+    Global, // 23
+    #[token("not")]
+    Not, // 24
+    #[token("with")]
+    With, // 25
+    #[token("async")]
+    Async, // 26
+    #[token("elif")]
+    Elif, // 27
+    #[token("if")]
+    If, // 28
+    #[token("or")]
+    Or, // 29
+    #[token("yield")]
+    Yield, // 30
+    #[token("break")]
+    Break, // 31
+    #[token("except")]
+    Except, // 32
+    #[token("in")]
+    In, // 33
+    #[token("raise")]
+    Raise, // 34
     // ***************
     //    Operators
     // ***************
