@@ -13,6 +13,10 @@ pub struct Constant {
 }
 impl Constant {
     #[inline]
+    pub fn new(span: Span, kind: ConstantKind) -> Constant {
+        Constant::new(span, Arc::new(kind))
+    }
+    #[inline]
     pub fn kind(&self) -> &ConstantKind {
         &*self.kind
     }
@@ -49,6 +53,65 @@ impl Spanned for Constant {
     #[inline]
     fn span(&self) -> Span {
         self.span
+    }
+}
+
+pub trait ConstantVisitor<'a> {
+    type Constant;
+    fn visit_tuple(
+        &mut self,
+        span: Span,
+        iter: impl Iterator<Item=Self::Constant>
+    ) -> Self::Constant;
+    fn visit_int(&mut self, span: Span, val: i64) -> Self::Constant;
+    fn visit_big_int(&mut self, span: Span, val: &'a BigInt) -> Self::Constant;
+    fn visit_float(&mut self, span: Span, val: f64) -> Self::Constant;
+    fn visit_string(&mut self, span: Span, lit: crate::lexer::StringInfo<'a>) -> Self::Constant;
+    fn visit_complex(
+        &mut self,
+        span: Span,
+        real: Option<(Span, f64)>,
+        imaginary: (Span, f64),
+    ) -> Self::Constant;
+}
+impl<'a> ConstantVisitor<'a> for super::tree::MemoryVisitor {
+    type Constant = Constant;
+    fn visit_tuple(
+        &mut self,
+        span: Span,
+        iter: impl Iterator<Item=Self::Constant>
+    ) -> Self::Constant {
+        Constant::new(span, ConstantKind::Tuple(iter.collect()))
+    }
+    fn visit_int(&mut self, span: Span, val: i64) -> Self::Constant {
+        Constant::new(span, ConstantKind::Integer(val))
+    }
+    fn visit_big_int(&mut self, span: Span, val: &'a BigInt) -> Self::Constant {
+        Constant::BigInt(val.clone())
+    }
+    fn visit_float(&mut self, span: Span, val: f64) -> Self::Constant {
+        Constant::new(span, kind)
+    }
+    fn visit_string(
+        &mut self,
+        span: Span,
+        lit: crate::lexer::StringInfo<'a>
+    ) -> Self::Constant {
+        Constant::new(span, ConstantKind::String(StringLiteral {
+            value: lit.original_text.into(),
+            style: lit.style
+        }))
+    }
+    fn visit_complex(
+        &mut self,
+        span: Span,
+        real: Option<(Span, f64)>,
+        imaginary: (Span, f64),
+    ) -> Self::Constant {
+        Constant::new(span, ConstantKind::Complex(ComplexLiteral {
+            real: real.map(|(_, val)| FloatLiteral::new(val).unwrap()),
+            imaginary: FloatLiteral::new(imaginary.1).unwrap()
+        }))
     }
 }
 

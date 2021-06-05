@@ -22,6 +22,7 @@ impl Display for Span {
         write!(f, "{}..{}", self.start, self.end)
     }
 }
+pub type RawIdent<'a> = crate::lexer::Ident<'a>;
 struct IdentInner {
     span: Span,
     // NOTE: Double boxing avoids fat pointer
@@ -81,6 +82,13 @@ impl Spanned for Ident {
         self.0.span
     }
 }
+impl<'a> From<RawIdent<'a>> for Ident {
+    fn from(raw: RawIdent<'a>) -> Ident {
+        Ident::new(RawIdent {
+            text: raw.text
+        })
+    }
+}
 
 /// Access the [Span] of an AST item
 pub trait Spanned {
@@ -94,6 +102,7 @@ pub use self::tree::AstVisitor;
 /// This is automatically generated from the ASDL file
 pub mod tree {
     use super::*;
+    use super::constants::ConstantVisitor;
     use educe::Educe;
     include!(concat!(env!("OUT_DIR"), "/ast_gen.rs"));
 }
