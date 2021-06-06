@@ -25,12 +25,6 @@ impl Display for AllocError {
     }
 }
 impl Error for AllocError {}
-impl From<std::alloc::AllocError> for AllocError {
-    #[inline]
-    fn from(cause: std::alloc::AllocError) -> Self {
-        AllocError
-    }
-}
 impl From<LayoutError> for AllocError {
  #[inline]
     fn from(cause: LayoutError) -> Self {
@@ -56,6 +50,7 @@ impl Allocator {
             limit
         );
         self.limit = limit;
+        self
     }
     #[inline]
     pub fn limit(&self) -> usize {
@@ -85,7 +80,10 @@ impl Allocator {
     #[inline]
     pub fn alloc_layout(&self, layout: Layout) -> Result<NonNull<u8>, AllocError> {
         if layout.size() <= self.remaining_bytes() {
-            Ok(self.arena.try_alloc_layout(layout)?)
+            match self.arena.try_alloc_layout(layout) {
+                Ok(val) => Ok(val),
+                Err(_) => Err(AllocError)
+            }
         } else {
             Err(AllocError)
         }
@@ -94,7 +92,10 @@ impl Allocator {
     pub fn alloc_slice_copy<'a, T: Copy>(&'a self, src: &[T]) -> Result<&'a mut [T], AllocError> {
         unsafe {
             let layout = Layout::for_value(src);
-            let mem = self.arena.try_alloc_layout(layout)?.as_ptr() as *mut T;
+            let mem = match self.arena.try_alloc_layout(layout) {
+                Ok(mem) => mem.as_ptr() as *mut T,
+                Err(_) => return Err(AllocError)
+            };
             let len = src.len();
             mem.copy_from_nonoverlapping(src.as_ptr(), len);
             Ok(slice::from_raw_parts_mut(mem, len))
@@ -112,6 +113,7 @@ impl Allocator {
     ///
     /// NOTE: The underlying limit may be [usize::MAX],
     /// in which case this will return a very large number
+    #[inline]
     pub fn remaining_bytes(&self) -> usize {
         self.limit - self.arena.allocated_bytes()
     }

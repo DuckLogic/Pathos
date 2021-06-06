@@ -82,13 +82,6 @@ impl Spanned for Ident {
         self.0.span
     }
 }
-impl<'a> From<RawIdent<'a>> for Ident {
-    fn from(raw: RawIdent<'a>) -> Ident {
-        Ident::new(RawIdent {
-            text: raw.text
-        })
-    }
-}
 
 /// Access the [Span] of an AST item
 pub trait Spanned {

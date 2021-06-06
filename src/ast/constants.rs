@@ -14,7 +14,7 @@ pub struct Constant {
 impl Constant {
     #[inline]
     pub fn new(span: Span, kind: ConstantKind) -> Constant {
-        Constant::new(span, Arc::new(kind))
+        Constant { span, kind: Arc::new(kind) }
     }
     #[inline]
     pub fn kind(&self) -> &ConstantKind {
@@ -58,6 +58,8 @@ impl Spanned for Constant {
 
 pub trait ConstantVisitor<'a> {
     type Constant;
+    fn visit_none(&mut self, span: Span) -> Self::Constant;
+    fn visit_bool(&mut self, span: Span, val: bool) -> Self::Constant;
     fn visit_tuple(
         &mut self,
         span: Span,
@@ -76,6 +78,12 @@ pub trait ConstantVisitor<'a> {
 }
 impl<'a> ConstantVisitor<'a> for super::tree::MemoryVisitor {
     type Constant = Constant;
+    fn visit_none(&mut self, span: Span) -> Self::Constant {
+        Constant::new(span, ConstantKind::None)
+    }
+    fn visit_bool(&mut self, span: Span, val: bool) -> Self::Constant {
+        Constant::new(span, ConstantKind::Bool(val))
+    }
     fn visit_tuple(
         &mut self,
         span: Span,
@@ -87,10 +95,10 @@ impl<'a> ConstantVisitor<'a> for super::tree::MemoryVisitor {
         Constant::new(span, ConstantKind::Integer(val))
     }
     fn visit_big_int(&mut self, span: Span, val: &'a BigInt) -> Self::Constant {
-        Constant::BigInt(val.clone())
+        Constant::new(span, ConstantKind::BigInteger(val.clone()))
     }
     fn visit_float(&mut self, span: Span, val: f64) -> Self::Constant {
-        Constant::new(span, kind)
+        Constant::new(span, ConstantKind::Float(FloatLiteral::new(val).unwrap()))
     }
     fn visit_string(
         &mut self,
@@ -117,6 +125,8 @@ impl<'a> ConstantVisitor<'a> for super::tree::MemoryVisitor {
 
 #[derive(Clone, Debug, PartialEq, Hash)]
 pub enum ConstantKind {
+    None,
+    Bool(bool),
     Tuple(Vec<Constant>),
     Integer(i64),
     BigInteger(BigInt),
@@ -157,6 +167,7 @@ impl Display for ConstantKind {
 /// A marker type to indicate a float literal is invalid
 ///
 /// In python, this can occur if a float is infinite or NaN.
+#[derive(Debug, Clone, Copy)]
 pub struct InvalidFloatLiteral(());
 
 /// A python floating-point literal

@@ -1,4 +1,5 @@
 //! A lexer for python-style source code
+use std::fmt::{self, Formatter, Debug};
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 
@@ -167,7 +168,7 @@ impl Default for RawLexerState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum LexError {
     InvalidToken,
     AllocFailed
@@ -186,6 +187,17 @@ pub struct PythonLexer<'src, 'arena: 'src> {
     pending_indentation_change: isize,
     indent_stack: Vec<usize>,
     starting_line: bool,
+}
+impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let span = self.current_span();
+        let slice = self.raw_lexer.slice();
+        // TODO: More fields?
+        f.debug_struct("PythonLexer")
+            .field("span", &span)
+            .field("slice", &slice)
+            .finish()
+    }
 }
 
 macro_rules! translate_tokens {
@@ -329,7 +341,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 },
                 FloatLiteral (f) => Token::FloatLiteral(f),
                 Error => {
-                    return Err(LexError::Unknown)
+                    return Err(LexError::InvalidToken)
                 },
                 String(s) => {
                     Token::StringLiteral(self.arena.alloc(StringInfo {
@@ -470,6 +482,95 @@ pub enum Token<'arena> {
     DecreaseIndent,
     /// A logical newline
     Newline,
+}
+impl<'a> Token<'a> {
+        #[inline]
+    pub fn static_text(&self) -> Option<&'static str> {
+        Some(match *self {
+            Token::False => "False",
+            Token::Await => "await",
+            Token::Else => "else",
+            Token::Import => "import",
+            Token::Pass => "pass",
+            Token::None => "None",
+            Token::True => "True",
+            Token::Class => "class",
+            Token::Finally => "finally",
+            Token::Is => "is",
+            Token::Return => "return",
+            Token::And => "and",
+            Token::Continue => "continue",
+            Token::For => "for",
+            Token::Lambda => "lambda",
+            Token::Try => "try",
+            Token::As => "as",
+            Token::Def => "def",
+            Token::From => "from",
+            Token::Nonlocal => "nonlocal",
+            Token::While => "while",
+            Token::Assert => "assert",
+            Token::Del => "del",
+            Token::Global => "global",
+            Token::Not => "not",
+            Token::With => "with",
+            Token::Async => "async",
+            Token::Elif => "elif",
+            Token::If => "if",
+            Token::Or => "or",
+            Token::Yield => "yield",
+            Token::Break => "break",
+            Token::Except => "except",
+            Token::In => "in",
+            Token::Raise => "raise",
+            Token::Plus => "+",
+            Token::Minus => "-",
+            Token::Star => "*",
+            Token::DoubleStar => "**",
+            Token::Slash => "/",
+            Token::DoubleSlash => "//",
+            Token::Percent => "%",
+            Token::At => "@",
+            Token::LeftShift => "<<",
+            Token::RightShift => ">>",
+            Token::Ampersand => "&",
+            Token::BitwiseOr => "|",
+            Token::BitwiseXor => "^",
+            Token::BitwiseInvert => "~",
+            Token::AssignOperator => ":=",
+            Token::LessThan => "<",
+            Token::GreaterThan => ">",
+            Token::LessThanOrEqual => "<=",
+            Token::GreaterThanOrEqual => ">=",
+            Token::DoubleEquals => "==",
+            Token::NotEquals => "!=",
+            Token::OpenParen => "(",
+            Token::CloseParen => ")",
+            Token::OpenBracket => "[",
+            Token::CloseBracket => "]",
+            Token::OpenBrace => "{",
+            Token::CloseBrace => "}",
+            Token::Comma => ",",
+            Token::Colon => ":",
+            Token::Period => ".",
+            Token::Semicolon => ";",
+            Token::Equals => "=",
+            Token::Arrow => "->",
+            Token::PlusEquals => "+=",
+            Token::MinusEquals => "-=",
+            Token::StarEquals => "*=",
+            Token::SlashEquals => "/=",
+            Token::DoubleSlashEquals => "//=",
+            Token::PercentEquals => "%=",
+            Token::AtEquals => "@=",
+            Token::AndEquals => "&=",
+            Token::OrEquals => "|=",
+            Token::XorEquals => "^=",
+            Token::RightShiftEquals => ">>=",
+            Token::LeftShiftEquals => "<<=",
+            Token::DoubleStarEquals => "**=",
+            _ => return None
+        })
+    }
 }
 
 #[derive(Logos, Debug, PartialEq)]

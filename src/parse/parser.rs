@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::marker::PhantomData;
 
 use crate::ast::Span;
 use crate::lexer::{PythonLexer, Ident, LexError, Token};
@@ -54,6 +55,7 @@ impl ParseErrorBuilder {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
 pub struct SpannedToken<'a> {
     pub span: Span,
     pub kind: Token<'a>
@@ -66,7 +68,196 @@ impl<'a> Deref for SpannedToken<'a> {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum SeperatorParseState {
+    AwaitingStart,
+    AwaitingNext,
+    AwaitingSeperator,
+    Finished,
+}
+impl Default for SeperatorParseState {
+    #[inline]
+    fn default() -> SeperatorParseState {
+        SeperatorParseState::AwaitingStart
+    }
+}
+pub trait EndFunc<'src, 'a> {
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
+    fn description(&self) -> &'static str;
+}
+impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
+    #[inline]
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+        match parser.peek() {
+            Some(tk) => tk == *self,
+            None => false
+        }
+    }
+    #[inline]
+    fn description(&self) -> &'static str {
+        self.static_text().unwrap_or("ending")
+    }
+}
+impl<'src, 'a, Func> EndFunc<'src, 'a> for Func 
+    where Func: FnMut(&Parser<'src, 'a>) -> bool {
+    #[inline]
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+        (*self)(parser)
+    }
+    #[inline]
+    fn description(&self) -> &'static str {
+        "ending"
+    }
+}
+#[derive(Debug)]
+pub struct ParseSeperated<
+    'p, 'src, 'a, ParseFunc,
+    E, T
+> {
+    pub parser: &'p mut Parser<'src, 'a>,
+    pub parse_func: ParseFunc,
+    pub seperator: Token<'a>,
+    pub end_func: E,
+    pub state: SeperatorParseState,
+    /// Allow an extra (redundant) separator
+    /// to terminate the list of parsed items.
+    ///
+    /// For example: `(a, b, c,)` has a redundant comma
+    /// terminating the tuple.
+    pub allow_terminator: bool,
+    pub marker: PhantomData<fn() -> T>,
+}
+impl<'p, 'src, 'a,
+    ParseFunc: FnMut(&mut Parser<'src, 'a>) -> Result<T, ParseError>,
+    E: EndFunc<'src, 'a>, T
+> ParseSeperated<'p, 'src, 'a, ParseFunc, E, T> {
+    #[inline]
+    fn new(
+        parser: &'p mut T,
+        parse_func: ParseFunc,
+        seperator: Token<'a>,
+        end_func: E,
+        allow_terminator: bool,
+    ) -> Self {
+        ParseSeperated {
+            parser, parse_func, seperator,
+            end_func, state: SeperatorParseState::AwaitingStart,
+            allow_terminator, marker: PhantomData,
+        }
+    }
+    /// The error to give if we don't encounter
+    /// the expected separator
+    ///
+    /// For example, if we are parsing the list:
+    /// `[a, b, c !` and we encounter `!`.
+    /// A good message in this case would be:
+    /// "Expected either ',' or ']'"
+    #[cold]
+    fn unexpected_seperator(&self) -> ParseError {
+        self.parser.unexpected(
+            format_args!(
+                "Expected {:?} or {}",
+                self.seperator.static_text().unwrap_or("<sep>"),
+                self.end_func.description()
+            )
+        )
+    }
+    #[inline]
+    fn maybe_end_parse(&mut self) -> bool {
+        if (self.end_func)(&*self.parser) {
+            self.state = SeperatorParseState::Finished;
+            true // We want to end the parse
+        } else {
+            false
+        }
+    }
+}
+
+impl<'p, 'src, 'a,
+    ParseFunc: FnMut(&mut Parser<'src, 'a>) -> Result<T, ParseError>,
+    E: EndFunc<'src, 'a>, T
+> Iterator for ParseSeperated<'p, 'src, 'a, ParseFunc, E, T> {
+    type Item = Result<T, ParseError>;
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.state {
+                SeperatorParseState::AwaitingStart => {
+                    /*
+                     * We've seen nothing yet
+                     * Decide if we should end it 
+                     * and abort early.
+                     * This corresponds to cases:
+                     * 1. [... -> starting out, no early end
+                     * 2. [] -> early end
+                     */
+                    if self.maybe_end_parse() {
+                        return None;
+                    }
+                    // fallthrough to parse item
+                },
+                SeperatorParseState::AwaitingNext => {
+                    /*
+                     * We've already seen a separator
+                     * and are ready to parse the next item.
+                     * This corresponds to case:
+                     * [a, b, c -> We are right before 'c' and ready to parse it.
+                     * Seeing an ending `]` would just be a plain old
+                     *
+                     * The only exception to this is if
+                     * we allow extra terminators.
+                     * We could potentially have [a, b,] in that case.
+                     */
+                    if self.allow_terminator && self.maybe_end_parse() {
+                        return None;
+                    }
+                    // fallthrough to parse item
+                }
+                SeperatorParseState::AwaitingSeperator => {
+                    match self.parser.peek() {
+                        Some(tk) if tk.kind == self.seperator => {
+                            match self.parser.skip() {
+                                Ok(()) => {},
+                                Err(e) => return Some(Err(e))
+                            };
+                            self.state = SeperatorParseState::AwaitingNext;
+                            continue; // Continue parsing
+                        },
+                        Some(_) => {
+                            // We didn't see a seperator, but maybe we should end the parse
+                            if self.maybe_end_parse() {
+                                return None;
+                            } else {
+                                // fallthrough to error
+                            }
+                        }
+                        None => {
+                            // EOF -> fallthrough to error
+                        }
+                    };
+                    return Some(Err(self.unexpected_seperator()))
+                },
+                SeperatorParseState::Finished => {
+                    return None
+                }
+            }
+            match (self.parse_func)(&mut *self.parser) {
+                Ok(val) => {
+                    self.state = SeperatorParseState::AwaitingSeperator;
+                    return Some(Ok(val))
+                },
+                Err(e) => {
+                    return Some(Err(e));
+                }
+            }
+        }
+    }
+}
+
+#[derive(educe::Educe)]
+#[educe(Debug)]
 pub struct Parser<'src, 'a> {
+    #[educe(Debug(ignore))]
     arena: &'a Allocator,
     /// The buffer of look-ahead, containing
     /// tokens we have already lexed.
@@ -117,6 +308,35 @@ impl<'a, 'src> Parser<'a, 'src> {
             .wrapping_sub(1)
             .wrapping_sub(amount);
         Ok(self.buffer.get(index).cloned())
+    }
+    /// Skips over the next token without returning it
+    ///
+    /// This should be used in conjunction with peek.
+    /// For example:
+    /// ````no_run
+    /// # fn result(val: i64) -> i64 {} 
+    /// # fn taco() -> Result<i64, ParseError> {
+    /// # let parser: Parser<'static, 'static> = todo!();
+    /// match parser.peek()?.kind {
+    ///     Token::Integer(val) => {
+    ///         parser.skip()?;
+    ///         return Ok(result(val));
+    ///     }
+    ///     _ => return Err(())
+    /// }
+    /// # }
+    /// ````
+    /// This is just like `pop`, but doesn't return the reuslt token.
+    ///
+    /// NOTE: Panics on EOF. It is the caller's responsibility to check
+    /// this. This should be fine if you've already done a call to `peek`.
+    #[inline]
+    pub fn skip(&mut self) -> Result<(), ParseError> {
+        match self.pop() {
+            Ok(Some(SpannedToken { .. })) => Ok(()),
+            Ok(None) => unreachable!("EOF"),
+            Err(e) => Err(e)
+        }
     }
     /// Pop a token, lexing a new token and adding 
     /// it to the internal buffer
@@ -194,6 +414,20 @@ impl<'a, 'src> Parser<'a, 'src> {
     //
     // Utilities
     //
+    pub fn parse_terminated<'p, T, F>(
+        &'p mut self,
+        sep: Token<'a>,
+        ending: Token<'a>,
+        parse_func: F
+    ) -> ParseSeperated<'p, 'src, 'a, F, Token<'a>, T> 
+        where F: FnMut(&mut Self) -> Result<T, ParseError> {
+        ParseSeperated::new(
+            self, parse_func,
+            sep,
+            ending,
+            true,
+        )
+    }
     pub fn expect(&mut self, expected: Token<'a>)  -> Result<(), ParseError> {
         self.expect_if(&expected, |actual| *actual == expected)
     }
@@ -240,7 +474,7 @@ impl<'a, 'src> Parser<'a, 'src> {
             .build()
     }
     pub fn pop_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
-        self.expect_with("an identifier", |token| match token {
+        self.expect_map("an identifier", |token| match token {
             &Token::Ident(ident) => Some(ident),
             _ => None
         })
