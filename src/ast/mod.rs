@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 
 pub mod constants;
+pub mod visitor;
 
 pub use self::constants::{Constant};
 
@@ -88,7 +89,6 @@ pub trait Spanned {
     fn span(&self) -> Span;
 }
 
-pub use self::tree::AstVisitor;
 
 /// A in-memory representation of the AST
 ///
