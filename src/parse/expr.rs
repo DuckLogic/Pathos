@@ -1,10 +1,10 @@
 use std::iter;
-use std::marker::PhantomData;
 
 use crate::lexer::{Token};
-use crate::ast::AstVisitor;
+use crate::ast::{AstVisitor, Span};
+use crate::ast::tree::ExprContext;
 
-use super::parser::{SpannedToken, Parser, ParseError};
+use super::parser::{SpannedToken, Parser, IParser, ParseError};
 use super::PythonParser;
 
 /// The precedence of an expression
@@ -83,27 +83,28 @@ impl ExprPrec {
     const MIN: ExprPrec = ExprPrec::Assignment;
 }
 
-impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
+impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
     pub fn expression(&mut self) -> Result<V::Expr, ParseError> {
         self.parse_prec(ExprPrec::Atom)
     }
     /// A pratt parser for python expressions
     fn parse_prec(&mut self, prec: ExprPrec) -> Result<V::Expr, ParseError>{
-        let token = self.parser.peek();
-        let left = match token.and_then(Self::prefix_parser) {
-            Some(func) => {
+        let token = self.parser.peek_tk();
+        let left = match (token, token.as_ref().map(|tk| &tk.kind)
+            .and_then(Self::prefix_parser)) {
+            (Some(tk), Some(func)) => {
                 self.parser.skip()?;
-                func(&mut *self, &token)
+                func(&mut *self, &tk)?
             },
-            None => {
-                return Err(self.parser.unexpected("an expression"))
+            _ => {
+                return Err(self.parser.unexpected(&"an expression"))
             }
         };
-        let next_token = match self.parser.peek() {
+        let next_token = match self.parser.peek_tk() {
             Some(tk) => tk, 
             None => return Ok(left)
         };
-        match Self::infix_parser(next_token.into()) {
+        match Self::infix_parser(&next_token.kind) {
             Some(func) => {
                 func(self, left, &next_token)
             },
@@ -141,12 +142,12 @@ impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
                 self.visitor.visit_ident(
                     tk.span,
                     *inner
-                );
+                )
             }, 
             _ => unreachable!()
         };
         Ok(self.visitor.visit_expr_name(
-            ident.span,
+            tk.span,
             ident,
             self.expression_context
         ))
@@ -165,7 +166,7 @@ impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
                     },
                     _ => {}
                 }
-                self.visitor.visit_string(span, lit)
+                self.visitor.visit_string(span, *lit)
             },
             Token::IntegerLiteral(val) => {
                 self.visitor.visit_int(span, val)
@@ -176,7 +177,7 @@ impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
             Token::FloatLiteral(val) => {
                 self.visitor.visit_float(span, val)
             },
-            _ => unreachable!("unexpected constant: {}", tk)
+            _ => unreachable!("unexpected constant: {:?}", tk)
         };
         /*
          * NOTE: `kind` is a 'u' for strings with a unicode prefix
@@ -190,29 +191,83 @@ impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
 
     fn parse_comprehension(
         &mut self,
-    ) -> V::Comprehension {
+    ) -> Result<V::Comprehension, ParseError> {
         todo!()
     }
-    fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<V::Ident, ParseError> {
-        debug_assert_eq!(tk.kind, Token::OpenBracket);
-        let start = tk.span.start;
-        match self.parser.peek().map(|tk| tk.kind) {
-            Some(Token::CloseBracket) => {
-                return Ok(self.visitor.visit_expr_list(
-                    tk.span,
+    fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<V::Expr, ParseError> {
+        self.collection(tk, CollectionType::List)
+    }
+    fn collection(
+        &mut self,
+        start_token: &SpannedToken<'a>,
+        mut collection_type: CollectionType
+    ) -> Result<V::Expr, ParseError> {
+        debug_assert_eq!(
+            start_token.kind,
+            collection_type.opening_token()
+        );
+        // NOTE: Sets are never the default
+        assert!(!collection_type.is_set());
+        let start = start_token.span.start;
+        if self.parser.peek() == Some(collection_type.closing_token()) {
+            let end = self.parser.current_span().end;
+            self.parser.skip()?;
+            if collection_type.is_dict() {
+                return Ok(self.visitor.visit_expr_dict(
+                    Span { start, end },
+                    iter::empty(),
+                    iter::empty(),
+                ));
+            } else {
+                return Ok(collection_type.visit_simple(
+                    self.visitor,
+                    Span { start, end },
                     iter::empty(),
                     self.expression_context
-                ))
-            },
-            _ => {},
+                ));
+            }
         }
-        let expression_context = self.expression_context;
         let first = self.expression()?;
-        if self.parser.peek() == Some(Token::For) {
-            let comp = self.parse_comprehension();
-
+        let fisrt_value = if collection_type.is_dict() {
+            /*
+             * Check if it's actually a dict.
+             * It's also possible it's just a set
+             */
+            if self.parser.peek() == Some(Token::Colon) {
+                self.parser.skip()?;
+                // It's a dict alright
+                Some(self.expression()?)
+            } else {
+                // Actually a set in disguise
+                collection_type = CollectionType::Set;
+                None
+            }
         } else {
-
+            None
+        };
+        if self.parser.peek() == Some(Token::For) {
+            let mut comprehensions = Vec::with_capacity(1);
+            while self.parser.peek() == Some(Token::For) {
+                comprehensions.push(self.parse_comprehension()?);
+            }
+            let end = self.parser.expect(Token::CloseBracket)?.span.end;
+            if collection_type.is_dict() {
+                Ok(self.visitor.visit_expr_dict_comp(
+                    Span { start, end },
+                    first, fisrt_value.unwrap(),
+                    comprehensions.into_iter()
+                ))
+            } else {
+                Ok(collection_type.visit_comprehension(
+                    self.visitor, Span { start, end },
+                    first, comprehensions.into_iter()
+                ))
+            }
+        } else {
+            assert!(
+                !collection_type.is_dict(),
+                "TODO: Dictionary literals"
+            );
             let mut elements = vec![first];
             for val in self.parse_terminated(
                 Token::Comma,
@@ -221,14 +276,95 @@ impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
             ) {
                 elements.push(val?);
             }
-            self.parser.expect(Token::CloseBracket)?;
-
-            let end = elements.last().unwrap().span;;
-            self.visitor.visit_expr_list(
-                span, elts, ctx)
-
+            let end = self.parser.expect(Token::CloseBracket)?.span.end;
+            Ok(collection_type.visit_simple(
+                self.visitor,
+                Span { start, end },
+                elements.into_iter(),
+                self.expression_context
+            ))
         }
     }
 
+}
+
+#[derive(Copy, Clone, Debug)]
+enum CollectionType {
+    List,
+    Tuple,
+    Set,
+    Dict
+}
+impl CollectionType {
+    #[inline]
+    fn visit_simple<'a, V: AstVisitor<'a>>(
+        self,
+        visitor: &mut V,
+        span: Span,
+        elements: impl Iterator<Item=V::Expr>,
+        ctx: ExprContext
+    ) -> V::Expr {
+        match self {
+            CollectionType::List => {
+                visitor.visit_expr_list(span, elements, ctx)
+            },
+            CollectionType::Set => {
+                visitor.visit_expr_set(span, elements)
+            },
+            CollectionType::Tuple => {
+                visitor.visit_expr_tuple(span, elements, ctx)
+            },
+            CollectionType::Dict => unreachable!()
+        }
+    }
+    #[inline]
+    fn visit_comprehension<'a, V: AstVisitor<'a>>(
+        self,
+        visitor: &mut V,
+        span: Span,
+        element: V::Expr,
+        comprehensions: impl Iterator<Item=V::Comprehension>,
+    ) -> V::Expr {
+        match self {
+            CollectionType::List => {
+                visitor.visit_expr_list_comp(span, element, comprehensions)
+            },
+            CollectionType::Tuple => {
+                // NOTE: (a for x in y) is actually
+                // a generator, not a 'tuple comprehension'
+                visitor.visit_expr_generator_exp(span, element, comprehensions)
+            },
+            CollectionType::Set => {
+                visitor.visit_expr_set_comp(span, element, comprehensions)
+            },
+            CollectionType::Dict => unreachable!()
+        }
+    }
+    #[inline]
+    fn is_set(self) -> bool {
+        matches!(self, CollectionType::Set)
+    }
+    #[inline]
+    fn is_dict(self) -> bool {
+        matches!(self, CollectionType::Dict)
+    }
+    #[inline]
+    fn opening_token(self) -> Token<'static> {
+        match self {
+            CollectionType::List => Token::OpenBracket,
+            CollectionType::Tuple => Token::OpenParen,
+            CollectionType::Set |
+            CollectionType::Dict => Token::OpenBrace,
+        }
+    }
+    #[inline]
+    fn closing_token(self) -> Token<'static> {
+        match self {
+            CollectionType::List => Token::CloseBracket,
+            CollectionType::Tuple => Token::CloseParen,
+            CollectionType::Set |
+            CollectionType::Dict => Token::CloseBrace,            
+        }
+    }
 }
 

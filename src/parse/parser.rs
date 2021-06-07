@@ -36,12 +36,12 @@ pub struct ParseErrorBuilder(ParseErrorInner);
 impl ParseErrorBuilder {
     #[inline]
     pub fn expected(self, f: impl ToString) -> Self {
-        self.expected = Some(f.to_string());
+        self.0.expected = Some(f.to_string());
         self
     }
     #[inline]
     pub fn actual(self, f: impl ToString) -> Self {
-        self.actual = Some(f.to_string());
+        self.0.actual = Some(f.to_string());
         self
     }
     #[inline]
@@ -70,7 +70,7 @@ impl<'a> Deref for SpannedToken<'a> {
 impl<'a> PartialEq<Token<'a>> for SpannedToken<'a> {
     #[inline]
     fn eq(&self, other: &Token<'a>) -> bool {
-        self.kind == other
+        self.kind == *other
     }
 }
 
@@ -115,12 +115,32 @@ impl<'src, 'a, Func> EndFunc<'src, 'a> for Func
         "ending"
     }
 }
+pub trait IParser<'src, 'a>: Sized {
+    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
+    fn as_parser(&self) -> &Parser<'src, 'a>;
+    #[inline]
+    fn parse_terminated<'p, T, F>(
+        &'p mut self,
+        sep: Token<'a>,
+        ending: Token<'a>,
+        parse_func: F
+    ) -> ParseSeperated<'p, 'src, 'a, Self, F, Token<'a>, T> 
+        where F: FnMut(&mut Self) -> Result<T, ParseError> {
+        ParseSeperated::new(
+            self, parse_func,
+            sep,
+            ending,
+            true,
+        )
+    }
+
+}
 #[derive(Debug)]
 pub struct ParseSeperated<
-    'p, 'src, 'a, ParseFunc,
-    E, T
+    'p, 'src, 'a, P: IParser<'src, 'a>,
+    ParseFunc, E, T
 > {
-    pub parser: &'p mut Parser<'src, 'a>,
+    pub parser: &'p mut P,
     pub parse_func: ParseFunc,
     pub seperator: Token<'a>,
     pub end_func: E,
@@ -131,15 +151,16 @@ pub struct ParseSeperated<
     /// For example: `(a, b, c,)` has a redundant comma
     /// terminating the tuple.
     pub allow_terminator: bool,
-    pub marker: PhantomData<fn() -> T>,
+    pub marker: PhantomData<fn(&'src ()) -> T>,
 }
 impl<'p, 'src, 'a,
-    ParseFunc: FnMut(&mut Parser<'src, 'a>) -> Result<T, ParseError>,
+    P: IParser<'src, 'a>,
+    ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
     E: EndFunc<'src, 'a>, T
-> ParseSeperated<'p, 'src, 'a, ParseFunc, E, T> {
+> ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     #[inline]
     fn new(
-        parser: &'p mut Parser<'src, 'a>,
+        parser: &'p mut P,
         parse_func: ParseFunc,
         seperator: Token<'a>,
         end_func: E,
@@ -160,8 +181,8 @@ impl<'p, 'src, 'a,
     /// "Expected either ',' or ']'"
     #[cold]
     fn unexpected_seperator(&self) -> ParseError {
-        self.parser.unexpected(
-            format_args!(
+        self.parser.as_parser().unexpected(
+            &format_args!(
                 "Expected {:?} or {}",
                 self.seperator.static_text().unwrap_or("<sep>"),
                 self.end_func.description()
@@ -170,7 +191,7 @@ impl<'p, 'src, 'a,
     }
     #[inline]
     fn maybe_end_parse(&mut self) -> bool {
-        if (self.end_func)(&*self.parser) {
+        if self.end_func.should_end(self.parser.as_parser()) {
             self.state = SeperatorParseState::Finished;
             true // We want to end the parse
         } else {
@@ -180,9 +201,10 @@ impl<'p, 'src, 'a,
 }
 
 impl<'p, 'src, 'a,
-    ParseFunc: FnMut(&mut Parser<'src, 'a>) -> Result<T, ParseError>,
+    P: IParser<'src, 'a>,
+    ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
     E: EndFunc<'src, 'a>, T
-> Iterator for ParseSeperated<'p, 'src, 'a, ParseFunc, E, T> {
+> Iterator for ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     type Item = Result<T, ParseError>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -220,9 +242,10 @@ impl<'p, 'src, 'a,
                     // fallthrough to parse item
                 }
                 SeperatorParseState::AwaitingSeperator => {
-                    match self.parser.peek() {
+                    let parser = self.parser.as_mut_parser();
+                    match parser.peek() {
                         Some(tk) if tk.kind == self.seperator => {
-                            match self.parser.skip() {
+                            match parser.skip() {
                                 Ok(()) => {},
                                 Err(e) => return Some(Err(e))
                             };
@@ -283,16 +306,26 @@ pub struct Parser<'src, 'a> {
     lexer: PythonLexer<'src, 'a>,
 }
 impl<'a, 'src> Parser<'a, 'src> {
+    /// The span of the next token (same as given by peek)
+    ///
+    /// If this is at the EOF, gives the last token.
     #[inline]
     pub fn current_span(&self) -> Span {
-        match self.buffer().back() {
+        match self.buffer.back() {
             Some(tk) => tk.span,
             None => self.lexer.current_span()
         }
     }
     #[inline]
-    pub fn peek(&self) -> Option<SpannedToken<'a>> {
+    pub fn peek_tk(&self) -> Option<SpannedToken<'a>> {
         self.buffer.back().cloned()
+    }
+    #[inline]
+    pub fn peek(&self) -> Option<Token<'a>> {
+        match self.buffer.back() {
+            Some(tk) => Some(tk.kind),
+            None => None
+        }
     }
     fn assert_empty(&self) -> bool {
         debug_assert_eq!(
@@ -391,7 +424,7 @@ impl<'a, 'src> Parser<'a, 'src> {
         self.buffer.reserve(amount);
         while self.buffer.len() < amount {
             let lexer_span = self.lexer.current_span();
-            self.push_front(match self.lexer.next() {
+            self.buffer.push_front(match self.lexer.next() {
                 Ok(Some(val)) => SpannedToken {
                     span: lexer_span, kind: val
                 },
@@ -420,20 +453,6 @@ impl<'a, 'src> Parser<'a, 'src> {
     //
     // Utilities
     //
-    pub fn parse_terminated<'p, T, F>(
-        &'p mut self,
-        sep: Token<'a>,
-        ending: Token<'a>,
-        parse_func: F
-    ) -> ParseSeperated<'p, 'src, 'a, F, Token<'a>, T> 
-        where F: FnMut(&mut Self) -> Result<T, ParseError> {
-        ParseSeperated::new(
-            self, parse_func,
-            sep,
-            ending,
-            true,
-        )
-    }
     #[inline]
     pub fn expect(&mut self, expected: Token<'a>)  -> Result<SpannedToken<'a>, ParseError> {
         self.expect_if(
@@ -453,12 +472,12 @@ impl<'a, 'src> Parser<'a, 'src> {
         &mut self, expected: &dyn Display,
         func: impl FnOnce(&SpannedToken<'a>) -> Option<T>
     ) -> Result<T, ParseError> {
-        match self.peek() {
+        match self.peek_tk() {
             Some(actual) => {
                 if let Some(res) = func(&actual) {
                     match self.pop()? {
-                        Ok(tk) => {
-                            debug_assert_eq!(tk, actual);
+                        Some(tk) => {
+                           debug_assert_eq!(tk, actual);
                             return Ok(res);
                         },
                         None => unreachable!()
@@ -473,9 +492,9 @@ impl<'a, 'src> Parser<'a, 'src> {
     #[cold]
     pub fn unexpected(&self, expected: &dyn Display) -> ParseError {
         let kind = if self.is_finished() {
-            ParseError::UnexpectedEof
+            ParseErrorKind::UnexpectedEof
         } else {
-            ParseError::UnexpectedToken
+            ParseErrorKind::UnexpectedToken
         };
         ParseError::builder(self.current_span(), kind)
             .expected(expected)
@@ -486,8 +505,8 @@ impl<'a, 'src> Parser<'a, 'src> {
             .build()
     }
     pub fn pop_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
-        self.expect_map("an identifier", |token| match token {
-            &Token::Ident(ident) => Some(ident),
+        self.expect_map(&"an identifier", |token| match token.kind {
+            Token::Ident(ident) => Some(ident),
             _ => None
         })
     }
