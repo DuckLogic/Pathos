@@ -67,6 +67,12 @@ impl<'a> Deref for SpannedToken<'a> {
         &self.kind
     }
 }
+impl<'a> PartialEq<Token<'a>> for SpannedToken<'a> {
+    #[inline]
+    fn eq(&self, other: &Token<'a>) -> bool {
+        self.kind == other
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub enum SeperatorParseState {
@@ -133,7 +139,7 @@ impl<'p, 'src, 'a,
 > ParseSeperated<'p, 'src, 'a, ParseFunc, E, T> {
     #[inline]
     fn new(
-        parser: &'p mut T,
+        parser: &'p mut Parser<'src, 'a>,
         parse_func: ParseFunc,
         seperator: Token<'a>,
         end_func: E,
@@ -428,18 +434,24 @@ impl<'a, 'src> Parser<'a, 'src> {
             true,
         )
     }
-    pub fn expect(&mut self, expected: Token<'a>)  -> Result<(), ParseError> {
-        self.expect_if(&expected, |actual| *actual == expected)
+    #[inline]
+    pub fn expect(&mut self, expected: Token<'a>)  -> Result<SpannedToken<'a>, ParseError> {
+        self.expect_if(
+            &expected.static_text().unwrap(),
+            |actual| **actual == expected
+        )
     }
+    #[inline]
     pub fn expect_if(
         &mut self, expected: &dyn Display,
-        func: impl FnOnce(&Token<'a>) -> bool
-    ) -> Result<(), ParseError> {
-        self.expect_map(expected, |token| if func(token) { Some(()) } else { None })
+        func: impl FnOnce(&SpannedToken<'a>) -> bool
+    ) -> Result<SpannedToken<'a>, ParseError> {
+        self.expect_map(expected, |token| if func(token) { Some(*token) } else { None })
     }
+    #[inline]
     pub fn expect_map<T>(
         &mut self, expected: &dyn Display,
-        func: impl FnOnce(&Token<'a>) -> Option<T>
+        func: impl FnOnce(&SpannedToken<'a>) -> Option<T>
     ) -> Result<T, ParseError> {
         match self.peek() {
             Some(actual) => {

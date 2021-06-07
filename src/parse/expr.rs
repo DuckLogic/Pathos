@@ -83,7 +83,7 @@ impl ExprPrec {
     const MIN: ExprPrec = ExprPrec::Assignment;
 }
 
-impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
+impl<'p, 'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'p, 'src, 'a, 'v, V> {
     pub fn expression(&mut self) -> Result<V::Expr, ParseError> {
         self.parse_prec(ExprPrec::Atom)
     }
@@ -127,7 +127,7 @@ impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
              * - they are computed via a set of looping and filtering
              *   instructions, called a comprehension.
              */
-            Token::OpenBracket => Self::list,
+            Token::OpenBracket => Self::list_display,
             _ => return None
         })
     }
@@ -187,8 +187,15 @@ impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
             span, constant, kind
         ))
     }
+
+    fn parse_comprehension(
+        &mut self,
+    ) -> V::Comprehension {
+        todo!()
+    }
     fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<V::Ident, ParseError> {
         debug_assert_eq!(tk.kind, Token::OpenBracket);
+        let start = tk.span.start;
         match self.parser.peek().map(|tk| tk.kind) {
             Some(Token::CloseBracket) => {
                 return Ok(self.visitor.visit_expr_list(
@@ -198,6 +205,28 @@ impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
                 ))
             },
             _ => {},
+        }
+        let expression_context = self.expression_context;
+        let first = self.expression()?;
+        if self.parser.peek() == Some(Token::For) {
+            let comp = self.parse_comprehension();
+
+        } else {
+
+            let mut elements = vec![first];
+            for val in self.parse_terminated(
+                Token::Comma,
+                Token::CloseBracket,
+                |parser| parser.expression()
+            ) {
+                elements.push(val?);
+            }
+            self.parser.expect(Token::CloseBracket)?;
+
+            let end = elements.last().unwrap().span;;
+            self.visitor.visit_expr_list(
+                span, elts, ctx)
+
         }
     }
 
