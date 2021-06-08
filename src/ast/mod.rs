@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 pub mod constants;
 pub mod visitor;
 
+pub use self::visitor::AstVisitor;
 pub use self::constants::{Constant};
 
 #[derive(Copy, Clone, PartialEq, Eq)]

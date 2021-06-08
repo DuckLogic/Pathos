@@ -1,7 +1,7 @@
 use std::iter;
 
 use crate::lexer::{Token};
-use crate::ast::{AstVisitor, Span};
+use crate::ast::{Span};
 use crate::ast::tree::ExprContext;
 
 use super::parser::{SpannedToken, Parser, IParser, ParseError};
