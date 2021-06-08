@@ -4,10 +4,7 @@ use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 
 pub mod constants;
-pub mod visitor;
-pub mod mem_visitor;
 
-pub use self::visitor::AstVisitor;
 pub use self::constants::{Constant};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -97,7 +94,6 @@ pub trait Spanned {
 /// This is automatically generated from the ASDL file
 pub mod tree {
     use super::*;
-    use super::constants::ConstantVisitor;
     use educe::Educe;
     include!(concat!(env!("OUT_DIR"), "/ast_gen.rs"));
 }

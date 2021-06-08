@@ -5,7 +5,7 @@ use crate::ast::{Span};
 use crate::ast::tree::ExprContext;
 
 use super::parser::{SpannedToken, Parser, IParser, ParseError};
-use super::{PythonParser, AstVisitor};
+use super::{PythonParser};
 
 /// The precedence of an expression
 ///
@@ -83,7 +83,7 @@ impl ExprPrec {
     const MIN: ExprPrec = ExprPrec::Assignment;
 }
 
-impl<'src, 'a, 'v, V: AstVisitor<'a>> PythonParser<'src, 'a, 'v, V> {
+impl<'src, 'a, 'v> PythonParser<'src, 'a, 'v, V> {
     pub fn expression(&mut self) -> Result<V::Expr, ParseError> {
         self.parse_prec(ExprPrec::Atom)
     }
@@ -297,7 +297,7 @@ enum CollectionType {
 }
 impl CollectionType {
     #[inline]
-    fn visit_simple<'a, V: AstVisitor<'a>>(
+    fn visit_simple<'a>(
         self,
         visitor: &mut V,
         span: Span,
@@ -318,7 +318,7 @@ impl CollectionType {
         }
     }
     #[inline]
-    fn visit_comprehension<'a, V: AstVisitor<'a>>(
+    fn visit_comprehension<'a>(
         self,
         visitor: &mut V,
         span: Span,
