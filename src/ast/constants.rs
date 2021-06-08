@@ -2,72 +2,165 @@ use std::sync::Arc;
 use std::fmt::{self, Write, Display, Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use std::borrow::Cow;
 use std::convert::TryFrom;
 
-use super::{Span, Spanned};
+use hashbrown::HashMap;
 
-#[derive(Clone)]
-pub struct Constant {
+use super::{Span, Spanned};
+use crate::alloc::{Allocator, AllocError};
+use crate::lexer::StringInfo;
+
+pub struct ConstantPool<'a> {
+    arena: &'a Allocator,
+    map: HashMap<&'a ConstantKind<'a>, ()>,
+    none: Option<&'a ConstantKind<'a>>,
+    bools: [Option<&'a ConstantKind<'a>>; 2],
+}
+impl<'a> ConstantPool<'a> {
+    #[inline]
+    pub fn create_with(
+        &mut self,
+        key: ConstantKind,
+        alloc: impl FnOnce(&'a Allocator) -> Result<&'a ConstantKind<'a>, AllocError>
+    ) -> Result<&'a ConstantKind<'a>, AllocError> {
+        let arena = self.arena;
+        self.map.raw_entry_mut()
+            .from_key(&key)
+            .or_insert_with(|| (alloc(arena), ()))
+    }
+    #[inline]
+    pub fn create(&mut self, key: ConstantKind<'a>) -> Result<&'a ConstantKind, Allocator> {
+        self.create_with(
+            key.clone(),
+            move |a| a.alloc(key)
+        )
+    }
+    #[inline]
+    pub fn bool(&mut self, span: Span, b: bool) -> Result<Constant<'a>, AllocError> {
+        let kind = match self.bools[b as usize] {
+            Some(cached) => cached,
+            None => {
+                let res = self.create(ConstantKind::Bool(b));
+                self.bools[b as usize] = Some(res);
+                res
+            }
+        };
+        Ok(Constant { span, kind })
+    }
+    #[inline]
+    pub fn none(&mut self, span: Span) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: match self.none {
+                Some(cached) => cached,
+                None => {
+                    let res = self.create(ConstantKind::None)?;
+                    self.none = Some(res);
+                    res
+                }
+            }
+        })
+    }
+    #[inline]
+    pub fn int(&mut self, span: Span, val: i64) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: self.creates(ConstantKind::Integer(val))
+        })
+    }
+    #[inline]
+    pub fn big_int(&mut self, span: Span, val: &'a BigInt) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: self.lookup(ConstantKind::BigInteger(val))
+        })
+    }
+    #[inline]
+    pub fn float(&mut self, span: Span, f: FloatLiteral) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: self.lookup(ConstantKind::Float(f))
+        })
+    }
+    #[inline]
+    pub fn string(&mut self, span: Span, lit: StringLiteral<'a>) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: self.lookup(ConstantKind::String(lit))
+        })
+    }
+
+    #[inline]
+    pub fn complex(&mut self, span: Span, lit: ComplexLiteral) -> Result<Constant<'a>, AllocError> {
+        Ok(Constant {
+            span, kind: self.lookup(ConstantKind::Complex(lit))
+        })
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct Constant<'a> {
     span: Span,
-    kind: Arc<ConstantKind>
+    kind: &'a ConstantKind<'a>
 }
-impl Constant {
+impl<'a> Constant<'a> {
     #[inline]
-    pub fn new(span: Span, kind: ConstantKind) -> Constant {
-        Constant { span, kind: Arc::new(kind) }
-    }
-    #[inline]
-    pub fn kind(&self) -> &ConstantKind {
-        &*self.kind
+    pub fn kind(self) -> &'a ConstantKind<'a> {
+        &self.0.kind
     }
 }
-impl PartialEq for Constant {
+impl<'a> PartialEq for Constant<'a> {
+    #[inline]
     fn eq(&self, other: &Constant) -> bool {
-        Arc::ptr_eq(&self.kind, &other.kind) 
-            || self.kind == other.kind
+        debug_assert_eq!(
+            std::ptr::eq(self.kind, other.kind),
+            self.kind == other.kind,
+            concat!(
+                "Pointer equality and value equality ",
+                " gave different results for {:?} and {:?}"),
+            self.kind, other.kind
+        );
+        std::ptr::eq(self.kind, other.kind)
     }
 }
-impl Hash for Constant {
+impl Hash for Constant<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.kind.hash(state);
+        // Use pointer hash
+        std::ptr::hash(self, self.0)
     }
 }
-impl Display for Constant {
+impl Display for Constant<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         Display::fmt(self.kind(), f)
     }
 }
-impl Debug for Constant {
+impl Debug for Constant<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{:?} @ {}", self.kind, self.span)
     }
 }
-impl Deref for Constant {
-    type Target = ConstantKind;
+impl<'a> Deref for Constant<'a> {
+    type Target = ConstantKind<'a>;
     #[inline]
-    fn deref(&self) -> &ConstantKind {
-        &*self.kind
+    fn deref(&self) -> &ConstantKind<'a> {
+        &self.kind
     }
 }
-impl Spanned for Constant {
+impl Spanned for Constant<'_> {
     #[inline]
     fn span(&self) -> Span {
-        self.span
+        self.0.span
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Hash)]
-pub enum ConstantKind {
+#[derive(Copy, Clone, Debug, PartialEq, Hash)]
+pub enum ConstantKind<'a> {
     None,
     Bool(bool),
-    Tuple(Vec<Constant>),
+    Tuple(&'a [Constant<'a>]),
     Integer(i64),
-    BigInteger(BigInt),
+    BigInteger(&'a BigInt),
     Float(FloatLiteral),
-    String(StringLiteral),
+    String(StringLiteral<'a>),
     Complex(ComplexLiteral)
 }
-impl Display for ConstantKind {
+impl Display for ConstantKind<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match *self {
             ConstantKind::Tuple(ref vals) => {
@@ -193,30 +286,30 @@ impl Display for ComplexLiteral {
 /// NOTE: Equality is based only on value (and prefix).
 /// It ignores stylistic information like the difference
 /// between single and triple quotes.
-#[derive(Debug, Clone)]
-pub struct StringLiteral {
-    pub value: String,
+#[derive(Debug, Copy, Clone)]
+pub struct StringLiteral<'a> {
+    pub value: &'a str,
     pub style: StringStyle,
 }
-impl StringLiteral {
+impl<'a> StringLiteral<'a> {
     #[inline]
     pub fn prefix(&self) -> Option<StringPrefix> {
         self.style.prefix
     }
 }
-impl Eq for StringLiteral {}
-impl PartialEq for StringLiteral {
+impl<'a> Eq for StringLiteral<'a> {}
+impl<'a> PartialEq for StringLiteral<'a> {
     fn eq(&self, other: &StringLiteral) -> bool {
         self.prefix() == other.prefix() && self.value == other.value
     }
 }
-impl Hash for StringLiteral {
+impl<'a> Hash for StringLiteral<'a> {
     fn hash<H: Hasher>(&self, h: &mut H) {
         self.prefix().hash(h);
         h.write(self.value.as_bytes());
     }
 }
-impl Display for StringLiteral {
+impl<'a> Display for StringLiteral<'a> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         /*
          * NOTE: Ignore raw strings.
@@ -263,6 +356,7 @@ pub enum StringPrefix {
     Bytes
 }
 impl StringPrefix {
+    #[inline]
     pub fn prefix_char(self) -> char {
         match self {
             StringPrefix::Formatted => 'f',

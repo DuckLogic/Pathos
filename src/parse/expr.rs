@@ -2,7 +2,7 @@ use std::iter;
 
 use crate::lexer::{Token};
 use crate::ast::{Span};
-use crate::ast::tree::ExprContext;
+use crate::ast::tree::*;
 
 use super::parser::{SpannedToken, Parser, IParser, ParseError};
 use super::{PythonParser};
@@ -83,12 +83,12 @@ impl ExprPrec {
     const MIN: ExprPrec = ExprPrec::Assignment;
 }
 
-impl<'src, 'a, 'v> PythonParser<'src, 'a, 'v, V> {
-    pub fn expression(&mut self) -> Result<V::Expr, ParseError> {
+impl<'src, 'a> PythonParser<'src, 'a> {
+    pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
         self.parse_prec(ExprPrec::Atom)
     }
     /// A pratt parser for python expressions
-    fn parse_prec(&mut self, prec: ExprPrec) -> Result<V::Expr, ParseError>{
+    fn parse_prec(&mut self, prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
         let token = self.parser.peek_tk();
         let left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
@@ -152,7 +152,7 @@ impl<'src, 'a, 'v> PythonParser<'src, 'a, 'v, V> {
             self.expression_context
         ))
     }
-    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<V::Expr, ParseError> {
+    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let span = tk.span;
         let kind = None;
         let constant = match tk.kind {
@@ -184,9 +184,9 @@ impl<'src, 'a, 'v> PythonParser<'src, 'a, 'v, V> {
          * Otherwise, it is `None`.
          * https://greentreesnakes.readthedocs.io/en/latest/nodes.html#Constant
          */
-        Ok(self.visitor.visit_expr_constant(
-            span, constant, kind
-        ))
+        Ok(Expr::Constant {
+            span, 
+        })
     }
 
     fn parse_comprehension(

@@ -4,8 +4,11 @@ use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 
 pub mod constants;
+pub mod tree;
 
 pub use self::constants::{Constant};
+use crate::alloc::AllocError;
+pub use crate::alloc::Allocator;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Span {
@@ -23,32 +26,40 @@ impl Display for Span {
     }
 }
 pub type RawIdent<'a> = crate::lexer::Ident<'a>;
-struct IdentInner {
+struct IdentInner<'a> {
     span: Span,
     // NOTE: Double boxing avoids fat pointer
-    text: Box<str>   
+    raw: RawIdent<'a>
 }
 #[derive(Clone)]
-pub struct Ident(Arc<IdentInner>);
-impl Ident {
-    pub fn new(span: Span, text: impl Into<Box<str>>) -> Self {
-        Ident(Arc::new(IdentInner {
-            span, text: text.into()
+pub struct Ident<'a>(&'a IdentInner<'a>);
+impl<'a> Ident<'a> {
+    #[inline]
+    pub fn from_raw(
+        arena: &'a Allocator, span: Span,
+        raw: RawIdent<'a>
+    ) -> Result<Self, AllocError> {
+        Ok(arena.alloc(IdentInner {
+            span, raw
         }))
     }
     #[inline]
-    pub fn text(&self) -> &str {
-        &self.0.text
+    pub fn text(&self) -> &'a str {
+        self.0.text()
+    }
+    #[inline]
+    pub fn as_raw(&self) -> &'a RawIdent<'a> {
+        self.0
     }
 }
-impl Deref for Ident {
+impl<'a> Deref for Ident<'a> {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        &self.0.text
+        self.0.text()
     }
 }
-impl Debug for Ident {
+impl Debug for Ident<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let text = self.text();
         if text.bytes().all(|b| {
@@ -60,26 +71,27 @@ impl Debug for Ident {
         }
     }
 }
-impl Display for Ident {
+impl Display for Ident<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.write_str(self.text())
     }
 }
-impl PartialEq for Ident {
+impl PartialEq for Ident<'_> {
+    #[inline]
     fn eq(&self, other: &Ident) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-            || self.text() == other.text()
+        self.as_raw() == other.as_raw()
     }
 }
-impl Hash for Ident {
-    fn hash<H: Hasher>(&self, h: &mut H) {
-        h.write(self.text().as_bytes());
+impl Hash for Ident<'_> {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_raw().hash(state)
     }
 }
-impl Spanned for Ident {
+impl Spanned for Ident<'_> {
     #[inline]
     fn span(&self) -> Span {
-        self.0.span
+        self.as_raw().span
     }
 }
 
@@ -89,11 +101,4 @@ pub trait Spanned {
 }
 
 
-/// A in-memory representation of the AST
-///
-/// This is automatically generated from the ASDL file
-pub mod tree {
-    use super::*;
-    use educe::Educe;
-    include!(concat!(env!("OUT_DIR"), "/ast_gen.rs"));
-}
+
