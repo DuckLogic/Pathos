@@ -76,7 +76,7 @@ pub trait ConstantVisitor<'a> {
         imaginary: (Span, f64),
     ) -> Self::Constant;
 }
-impl<'a> ConstantVisitor<'a> for super::tree::MemoryVisitor {
+impl<'a> ConstantVisitor<'a> for super::mem_visitor::MemoryVisitor {
     type Constant = Constant;
     fn visit_none(&mut self, span: Span) -> Self::Constant {
         Constant::new(span, ConstantKind::None)

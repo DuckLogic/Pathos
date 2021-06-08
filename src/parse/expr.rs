@@ -5,7 +5,7 @@ use crate::ast::{Span};
 use crate::ast::tree::ExprContext;
 
 use super::parser::{SpannedToken, Parser, IParser, ParseError};
-use super::PythonParser;
+use super::{PythonParser, AstVisitor};
 
 /// The precedence of an expression
 ///

@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 
 pub mod constants;
 pub mod visitor;
+pub mod mem_visitor;
 
 pub use self::visitor::AstVisitor;
 pub use self::constants::{Constant};
