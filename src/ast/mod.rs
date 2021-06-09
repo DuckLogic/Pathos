@@ -26,37 +26,33 @@ impl Display for Span {
     }
 }
 pub type RawIdent<'a> = crate::lexer::Ident<'a>;
-struct IdentInner<'a> {
+#[derive(Copy, Clone)]
+pub struct Ident<'a> {
     span: Span,
-    // NOTE: Double boxing avoids fat pointer
-    raw: RawIdent<'a>
+    raw: &'a RawIdent<'a>
 }
-#[derive(Clone)]
-pub struct Ident<'a>(&'a IdentInner<'a>);
 impl<'a> Ident<'a> {
     #[inline]
     pub fn from_raw(
-        arena: &'a Allocator, span: Span,
-        raw: RawIdent<'a>
+        span: Span,
+        raw: &'a RawIdent<'a>
     ) -> Result<Self, AllocError> {
-        Ok(arena.alloc(IdentInner {
-            span, raw
-        }))
+        Ok(Ident { span, raw })
     }
     #[inline]
     pub fn text(&self) -> &'a str {
-        self.0.text()
+        self.raw.text()
     }
     #[inline]
     pub fn as_raw(&self) -> &'a RawIdent<'a> {
-        self.0
+        self.raw
     }
 }
 impl<'a> Deref for Ident<'a> {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str {
-        self.0.text()
+        self.raw.text()
     }
 }
 impl Debug for Ident<'_> {

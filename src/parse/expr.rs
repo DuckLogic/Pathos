@@ -1,11 +1,15 @@
 use std::iter;
 
+use crate::ast::constants::FloatLiteral;
 use crate::lexer::{Token};
-use crate::ast::{Span};
+use crate::ast::{Span, Ident};
 use crate::ast::tree::*;
 
-use super::parser::{SpannedToken, Parser, IParser, ParseError};
+use super::parser::{SpannedToken, IParser, ParseError};
 use super::{PythonParser};
+
+use crate::vec;
+use crate::alloc::{Allocator, AllocError, Vec};
 
 /// The precedence of an expression
 ///
@@ -112,7 +116,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
         }
     }
     fn prefix_parser(token: &Token<'a>) 
-        -> Option<fn(&mut Self, &SpannedToken<'a>) -> Result<V::Expr, ParseError>> {
+        -> Option<fn(&mut Self, &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>> {
         Some(match *token {
             Token::Ident(_) => Self::name,
             Token::True | Token::False |
@@ -133,32 +137,27 @@ impl<'src, 'a> PythonParser<'src, 'a> {
         })
     }
     fn infix_parser(token: &Token<'a>) 
-        -> Option<fn(&mut Self, V::Expr, &SpannedToken<'a>) -> Result<V::Expr, ParseError>> {
-            None
+        -> Option<fn(&mut Self, Expr<'a>, &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>> {
+        todo!()
     }
-    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<V::Expr, ParseError> {
+    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let ident = match **tk {
-            Token::Ident(inner) => {
-                self.visitor.visit_ident(
-                    tk.span,
-                    *inner
-                )
-            }, 
+            Token::Ident(inner) => inner, 
             _ => unreachable!()
         };
-        Ok(self.visitor.visit_expr_name(
-            tk.span,
-            ident,
-            self.expression_context
-        ))
+        let ident = self.arena.alloc(Ident::from_raw(tk.span, ident))?;
+        Ok(&*self.arena.alloc(ExprKind::Name {
+            span: tk.span, id: ident,
+            ctx: self.expression_context
+        })?)
     }
     fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let span = tk.span;
         let kind = None;
         let constant = match tk.kind {
-            Token::True => self.visitor.visit_bool(span, true),
-            Token::False => self.visitor.visit_bool(span, false),
-            Token::None => self.visitor.visit_none(span),
+            Token::True => self.pool.bool(span, true)?,
+            Token::False => self.pool.bool(span, false)?,
+            Token::None => self.pool.none(span)?,
             Token::StringLiteral(lit) => {
                 match lit.style.prefix {
                     Some(crate::ast::constants::StringPrefix::Unicode) => {
@@ -166,16 +165,16 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                     },
                     _ => {}
                 }
-                self.visitor.visit_string(span, *lit)
+                self.pool.string(span, lit.clone())?
             },
             Token::IntegerLiteral(val) => {
-                self.visitor.visit_int(span, val)
+                self.pool.int(span, val)?
             },
             Token::BigIntegerLiteral(val) => {
-                self.visitor.visit_big_int(span, val)
+                self.pool.big_int(span, val)?
             },
             Token::FloatLiteral(val) => {
-                self.visitor.visit_float(span, val)
+                self.pool.float(span, FloatLiteral::new(val).unwrap())?
             },
             _ => unreachable!("unexpected constant: {:?}", tk)
         };
@@ -184,24 +183,24 @@ impl<'src, 'a> PythonParser<'src, 'a> {
          * Otherwise, it is `None`.
          * https://greentreesnakes.readthedocs.io/en/latest/nodes.html#Constant
          */
-        Ok(Expr::Constant {
-            span, 
-        })
+        Ok(&*self.arena.alloc(ExprKind::Constant {
+            span, kind, value: constant
+        })?)
     }
 
     fn parse_comprehension(
         &mut self,
-    ) -> Result<V::Comprehension, ParseError> {
+    ) -> Result<Comprehension<'a>, ParseError> {
         todo!()
     }
-    fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<V::Expr, ParseError> {
+    fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         self.collection(tk, CollectionType::List)
     }
     fn collection(
         &mut self,
         start_token: &SpannedToken<'a>,
         mut collection_type: CollectionType
-    ) -> Result<V::Expr, ParseError> {
+    ) -> Result<Expr<'a>, ParseError> {
         debug_assert_eq!(
             start_token.kind,
             collection_type.opening_token()
@@ -213,18 +212,17 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             let end = self.parser.current_span().end;
             self.parser.skip()?;
             if collection_type.is_dict() {
-                return Ok(self.visitor.visit_expr_dict(
-                    Span { start, end },
-                    iter::empty(),
-                    iter::empty(),
-                ));
+                return Ok(&*self.arena.alloc(ExprKind::Dict {
+                    span: Span { start, end },
+                    elements: &[]
+                })?);
             } else {
-                return Ok(collection_type.visit_simple(
-                    self.visitor,
+                return Ok(collection_type.create_simple(
+                    self.arena,
                     Span { start, end },
-                    iter::empty(),
+                    &[],
                     self.expression_context
-                ));
+                )?);
             }
         }
         let first = self.expression()?;
@@ -246,39 +244,56 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             None
         };
         if self.parser.peek() == Some(Token::For) {
-            let mut comprehensions = Vec::with_capacity(1);
+            let mut comprehensions = Vec::with_capacity(self.arena, 1)?;
             while self.parser.peek() == Some(Token::For) {
-                comprehensions.push(self.parse_comprehension()?);
+                comprehensions.push(self.parse_comprehension()?)?;
             }
             let end = self.parser.expect(Token::CloseBracket)?.span.end;
             if collection_type.is_dict() {
-                Ok(self.visitor.visit_expr_dict_comp(
-                    Span { start, end },
-                    first, fisrt_value.unwrap(),
-                    comprehensions.into_iter()
-                ))
+                Ok(&*self.arena.alloc(ExprKind::DictComp {
+                    span: Span { start, end },
+                    key: first,
+                    value: fisrt_value.unwrap(),
+                    generators: comprehensions.into_slice()
+                })?)
             } else {
-                Ok(collection_type.visit_comprehension(
-                    self.visitor, Span { start, end },
-                    first, comprehensions.into_iter()
-                ))
+                Ok(collection_type.create_comprehension(
+                    self.arena, Span { start, end },
+                    first, comprehensions.into_slice()
+                )?)
             }
-        } else {
-            assert!(
-                !collection_type.is_dict(),
-                "TODO: Dictionary literals"
-            );
-            let mut elements = vec![first];
+        } else if collection_type.is_dict() {
+            let mut elements = vec![in self.arena; (first, fisrt_value.unwrap())]?;
             for val in self.parse_terminated(
                 Token::Comma,
-                Token::CloseBracket,
+                Token::CloseBrace,
+                |parser| {
+                    let key = parser.expression()?;
+                    parser.parser.expect(Token::Colon)?;
+                    let value = parser.expression()?;
+                    Ok((key, value))
+                }
+            ) {
+                elements.push(val?);
+            }
+            let end = self.collection(., collection_type)
+            Ok(&*self.arena.alloc(ExprKind::Dict {
+                span: Span { start, end },
+                elements: elements.into_slice()
+
+            }))
+        } else {
+            let mut elements = vec![in self.arena; first]?;
+            for val in self.parse_terminated(
+                Token::Comma,
+                collection_type.closing_token(),
                 |parser| parser.expression()
             ) {
                 elements.push(val?);
             }
             let end = self.parser.expect(Token::CloseBracket)?.span.end;
-            Ok(collection_type.visit_simple(
-                self.visitor,
+            Ok(collection_type.create_simple(
+                self.arena,
                 Span { start, end },
                 elements.into_iter(),
                 self.expression_context
@@ -297,48 +312,48 @@ enum CollectionType {
 }
 impl CollectionType {
     #[inline]
-    fn visit_simple<'a>(
+    fn create_simple<'a>(
         self,
-        visitor: &mut V,
+        arena: &'a Allocator,
         span: Span,
-        elements: impl Iterator<Item=V::Expr>,
+        elements: &'a [Expr<'a>],
         ctx: ExprContext
     ) -> V::Expr {
-        match self {
+        arena.alloc(match self {
             CollectionType::List => {
-                visitor.visit_expr_list(span, elements, ctx)
+                ExprKind::List { span, elts: elements, ctx }
             },
             CollectionType::Set => {
-                visitor.visit_expr_set(span, elements)
+                ExprKind::Set { span, elts: elements }
             },
             CollectionType::Tuple => {
-                visitor.visit_expr_tuple(span, elements, ctx)
+                ExprKind::Tuple { span, elts: elements, ctx }
             },
             CollectionType::Dict => unreachable!()
-        }
+        })
     }
     #[inline]
-    fn visit_comprehension<'a>(
+    fn create_comprehension<'a>(
         self,
-        visitor: &mut V,
+        arena: &'a Allocator,
         span: Span,
-        element: V::Expr,
-        comprehensions: impl Iterator<Item=V::Comprehension>,
-    ) -> V::Expr {
-        match self {
+        element: Expr<'a>,
+        generators: &'a [Comprehension],
+    ) -> Result<Expr<'a>, AllocError> {
+        Ok(&*arena.alloc(match self {
             CollectionType::List => {
-                visitor.visit_expr_list_comp(span, element, comprehensions)
+                ExprKind::ListComp { span, elt: element, generators }
             },
             CollectionType::Tuple => {
                 // NOTE: (a for x in y) is actually
                 // a generator, not a 'tuple comprehension'
-                visitor.visit_expr_generator_exp(span, element, comprehensions)
+                ExprKind::GeneratorExp { span, elt: element, generators }
             },
             CollectionType::Set => {
-                visitor.visit_expr_set_comp(span, element, comprehensions)
+                ExprKind::SetComp { span, elt: element, generators }
             },
             CollectionType::Dict => unreachable!()
-        }
+        })?)
     }
     #[inline]
     fn is_set(self) -> bool {

@@ -18,21 +18,21 @@ pub enum Mod<'a> {
     },
     Interactive {
         body: &'a [Stmt<'a>],
-
     },
     Expression {
-        body: &'a Expr<'a>,
-
+        body: Expr<'a>,
     },
     FunctionType {
         argtypes: &'a [Expr<'a>],
-        returns: &'a Expr<'a>,
-
+        returns: Expr<'a>,
     },
 }
+/// A reference to a statement
+pub type Stmt<'a> = &'a StmtKind<'a>;
+
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
-pub enum Stmt<'a> {
+pub enum StmtKind<'a> {
     FunctionDef {
         /// The span of the source
         #[educe(Hash(ignore))]
@@ -42,7 +42,7 @@ pub enum Stmt<'a> {
         args: &'a Arguments<'a>,
         body: &'a [Stmt<'a>],
         decorator_list: &'a [Expr<'a>],
-        returns: Option<&'a Expr<'a>>,
+        returns: Option<Expr<'a>>,
         type_comment: Option<&'a str>,
 
     },
@@ -55,7 +55,7 @@ pub enum Stmt<'a> {
         args: &'a Arguments<'a>,
         body: &'a [Stmt<'a>],
         decorator_list: &'a [Expr<'a>],
-        returns: Option<&'a Expr<'a>>,
+        returns: Option<Expr<'a>>,
         type_comment: Option<&'a str>,
 
     },
@@ -76,7 +76,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: Option<&'a Expr<'a>>,
+        value: Option<Expr<'a>>,
 
     },
     Delete {
@@ -92,7 +92,7 @@ pub enum Stmt<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         targets: &'a [Expr<'a>],
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
         type_comment: Option<&'a str>,
     },
     AugAssign {
@@ -100,19 +100,18 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        target: &'a Expr<'a>,
+        target: Expr<'a>,
         op: Operator,
-        value: &'a Expr<'a>,
-
+        value: Expr<'a>,
     },
     AnnAssign {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        target: &'a Expr<'a>,
-        annotation: &'a Expr<'a>,
-        value: Option<&'a Expr<'a>>,
+        target: Expr<'a>,
+        annotation: Expr<'a>,
+        value: Option<Expr<'a>>,
         simple: bool,
     },
     For {
@@ -120,8 +119,8 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        target: &'a Expr<'a>,
-        iter: &'a Expr<'a>,
+        target: Expr<'a>,
+        iter: Expr<'a>,
         body: &'a [Stmt<'a>],
         orelse: &'a [Stmt<'a>],
         type_comment: Option<&'a str>,
@@ -131,8 +130,8 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        target: &'a Expr<'a>,
-        iter: &'a Expr<'a>,
+        target: Expr<'a>,
+        iter: Expr<'a>,
         body: &'a [Stmt<'a>],
         orelse: &'a [Stmt<'a>],
         type_comment: Option<&'a str>,
@@ -142,7 +141,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        test: &'a Expr<'a>,
+        test: Expr<'a>,
         body: &'a [Stmt<'a>],
         orelse: &'a [Stmt<'a>],
     },
@@ -151,7 +150,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        test: &'a Expr<'a>,
+        test: Expr<'a>,
         body: &'a [Stmt<'a>],
         orelse: &'a [Stmt<'a>],
     },
@@ -169,7 +168,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        items: &'a [Withitem<'a>],
+        items: &'a [WithItem<'a>],
         body: &'a [Stmt<'a>],
         type_comment: Option<&'a str>,
 
@@ -179,7 +178,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        subject: &'a Expr<'a>,
+        subject: Expr<'a>,
         cases: &'a [MatchCase<'a>],
     },
     Raise {
@@ -187,8 +186,8 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        exc: Option<&'a Expr<'a>>,
-        cause: Option<&'a Expr<'a>>,
+        exc: Option<Expr<'a>>,
+        cause: Option<Expr<'a>>,
 
     },
     Try {
@@ -197,7 +196,7 @@ pub enum Stmt<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         body: &'a [Stmt<'a>],
-        handlers: &'a [Excepthandler<'a>],
+        handlers: &'a [ExceptHandler<'a>],
         orelse: &'a [Stmt<'a>],
         finalbody: &'a [Stmt<'a>],
     },
@@ -206,8 +205,8 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        test: &'a Expr<'a>,
-        msg: Option<&'a Expr<'a>>,
+        test: Expr<'a>,
+        msg: Option<Expr<'a>>,
 
     },
     Import {
@@ -245,7 +244,7 @@ pub enum Stmt<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
     },
     Pass {
         /// The span of the source
@@ -266,68 +265,69 @@ pub enum Stmt<'a> {
         span: Span,
     },
 }
-impl<'a> Spanned for Stmt<'a> {
+impl<'a> Spanned for StmtKind<'a> {
     fn span(&self) -> Span {
         match *self {
-            Stmt::FunctionDef { span, .. } |
-            Stmt::AsyncFunctionDef { span, .. } |
-            Stmt::ClassDef { span, .. } |
-            Stmt::Return { span, .. } |
-            Stmt::Delete { span, .. } |
-            Stmt::Assign { span, .. } |
-            Stmt::AugAssign { span, .. } |
-            Stmt::AnnAssign { span, .. } |
-            Stmt::For { span, .. } |
-            Stmt::AsyncFor { span, .. } |
-            Stmt::While { span, .. } |
-            Stmt::If { span, .. } |
-            Stmt::With { span, .. } |
-            Stmt::AsyncWith { span, .. } |
-            Stmt::Match { span, .. } |
-            Stmt::Raise { span, .. } |
-            Stmt::Try { span, .. } |
-            Stmt::Assert { span, .. } |
-            Stmt::Import { span, .. } |
-            Stmt::ImportFrom { span, .. } |
-            Stmt::Global { span, .. } |
-            Stmt::Nonlocal { span, .. } |
-            Stmt::Expr { span, .. } |
-            Stmt::Pass { span, .. } |
-            Stmt::Break { span, .. } |
-            Stmt::Continue { span, .. } => span,
+            StmtKind::FunctionDef { span, .. } |
+            StmtKind::AsyncFunctionDef { span, .. } |
+            StmtKind::ClassDef { span, .. } |
+            StmtKind::Return { span, .. } |
+            StmtKind::Delete { span, .. } |
+            StmtKind::Assign { span, .. } |
+            StmtKind::AugAssign { span, .. } |
+            StmtKind::AnnAssign { span, .. } |
+            StmtKind::For { span, .. } |
+            StmtKind::AsyncFor { span, .. } |
+            StmtKind::While { span, .. } |
+            StmtKind::If { span, .. } |
+            StmtKind::With { span, .. } |
+            StmtKind::AsyncWith { span, .. } |
+            StmtKind::Match { span, .. } |
+            StmtKind::Raise { span, .. } |
+            StmtKind::Try { span, .. } |
+            StmtKind::Assert { span, .. } |
+            StmtKind::Import { span, .. } |
+            StmtKind::ImportFrom { span, .. } |
+            StmtKind::Global { span, .. } |
+            StmtKind::Nonlocal { span, .. } |
+            StmtKind::Expr { span, .. } |
+            StmtKind::Pass { span, .. } |
+            StmtKind::Break { span, .. } |
+            StmtKind::Continue { span, .. } => span,
         }
     }
 }
+/// A reference to an expression
+pub type Expr<'a> = &'a ExprKind<'a>;
+
+/// The type of a python expression
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
-pub enum Expr<'a> {
+pub enum ExprKind<'a> {
     BoolOp {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
         op: Boolop,
-        values: &'a [Expr],
-
+        values: &'a [Expr<'a>],
     },
     NamedExpr {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        target: &'a Expr<'a>,
-        value: &'a Expr<'a>,
-
+        target: Expr<'a>,
+        value: Expr<'a>,
     },
     BinOp {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        left: &'a Expr<'a>,
+        left: Expr<'a>,
         op: Operator,
-        right: &'a Expr<'a>,
-
+        right: Expr<'a>,
     },
     UnaryOp {
         /// The span of the source
@@ -335,7 +335,7 @@ pub enum Expr<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         op: Unaryop,
-        operand: &'a Expr<'a>,
+        operand: Expr<'a>,
 
     },
     Lambda {
@@ -344,7 +344,7 @@ pub enum Expr<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         args: &'a Arguments<'a>,
-        body: &'a Expr<'a>,
+        body: Expr<'a>,
 
     },
     IfExp {
@@ -352,9 +352,9 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        test: &'a Expr<'a>,
-        body: &'a Expr<'a>,
-        orelse: &'a Expr<'a>,
+        test: Expr<'a>,
+        body: Expr<'a>,
+        orelse: Expr<'a>,
 
     },
     Dict {
@@ -376,7 +376,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        elt: &'a Expr<'a>,
+        elt: Expr<'a>,
         generators: &'a [Comprehension<'a>],
     },
     SetComp {
@@ -384,7 +384,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        elt: &'a Expr<'a>,
+        elt: Expr<'a>,
         generators: &'a [Comprehension<'a>],
     },
     DictComp {
@@ -392,8 +392,8 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        key: &'a Expr<'a>,
-        value: &'a Expr<'a>,
+        key: Expr<'a>,
+        value: Expr<'a>,
         generators: &'a [Comprehension<'a>],
     },
     GeneratorExp {
@@ -401,7 +401,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        elt: &'a Expr<'a>,
+        elt: Expr<'a>,
         generators: &'a [Comprehension<'a>],
     },
     Await {
@@ -409,14 +409,14 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
     },
     Yield {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: Option<&'a Expr<'a>>,
+        value: Option<Expr<'a>>,
 
     },
     YieldFrom {
@@ -424,7 +424,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
 
     },
     Compare {
@@ -432,7 +432,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        left: &'a Expr<'a>,
+        left: Expr<'a>,
         ops: &'a [Cmpop],
         comparators: &'a [Expr<'a>],
     },
@@ -441,7 +441,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        func: &'a Expr<'a>,
+        func: Expr<'a>,
         args: &'a [Expr<'a>],
         keywords: &'a [Keyword<'a>],
     },
@@ -450,9 +450,9 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
         conversion: Option<char>,
-        format_spec: Option<&'a Expr<'a>>,
+        format_spec: Option<Expr<'a>>,
     },
     JoinedStr {
         /// The span of the source
@@ -467,14 +467,14 @@ pub enum Expr<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         value: Constant<'a>,
-        kind: Option<String>,
+        kind: Option<&'a str>,
     },
     Attribute {
         /// The span of the source
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
         attr: Ident<'a>,
         ctx: ExprContext,
     },
@@ -483,8 +483,8 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
-        slice: &'a Expr<'a>,
+        value: Expr<'a>,
+        slice: Expr<'a>,
         ctx: ExprContext,
     },
     Starred {
@@ -492,7 +492,7 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
         ctx: ExprContext,
     },
     Name {
@@ -524,41 +524,41 @@ pub enum Expr<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        lower: Option<&'a Expr<'a>>,
-        upper: Option<&'a Expr<'a>>,
-        step: Option<&'a Expr<'a>>,
+        lower: Option<Expr<'a>>,
+        upper: Option<Expr<'a>>,
+        step: Option<Expr<'a>>,
     },
 }
-impl<'a> Spanned for Expr<'a> {
+impl<'a> Spanned for ExprKind<'a> {
     fn span(&self) -> Span {
         match *self {
-            Expr::BoolOp { span, .. } |
-            Expr::NamedExpr { span, .. } |
-            Expr::BinOp { span, .. } |
-            Expr::UnaryOp { span, .. } |
-            Expr::Lambda { span, .. } |
-            Expr::IfExp { span, .. } |
-            Expr::Dict { span, .. } |
-            Expr::Set { span, .. } |
-            Expr::ListComp { span, .. } |
-            Expr::SetComp { span, .. } |
-            Expr::DictComp { span, .. } |
-            Expr::GeneratorExp { span, .. } |
-            Expr::Await { span, .. } |
-            Expr::Yield { span, .. } |
-            Expr::YieldFrom { span, .. } |
-            Expr::Compare { span, .. } |
-            Expr::Call { span, .. } |
-            Expr::FormattedValue { span, .. } |
-            Expr::JoinedStr { span, .. } |
-            Expr::Constant { span, .. } |
-            Expr::Attribute { span, .. } |
-            Expr::Subscript { span, .. } |
-            Expr::Starred { span, .. } |
-            Expr::Name { span, .. } |
-            Expr::List { span, .. } |
-            Expr::Tuple { span, .. } |
-            Expr::Slice { span, .. } => span,
+            ExprKind::BoolOp { span, .. } |
+            ExprKind::NamedExpr { span, .. } |
+            ExprKind::BinOp { span, .. } |
+            ExprKind::UnaryOp { span, .. } |
+            ExprKind::Lambda { span, .. } |
+            ExprKind::IfExp { span, .. } |
+            ExprKind::Dict { span, .. } |
+            ExprKind::Set { span, .. } |
+            ExprKind::ListComp { span, .. } |
+            ExprKind::SetComp { span, .. } |
+            ExprKind::DictComp { span, .. } |
+            ExprKind::GeneratorExp { span, .. } |
+            ExprKind::Await { span, .. } |
+            ExprKind::Yield { span, .. } |
+            ExprKind::YieldFrom { span, .. } |
+            ExprKind::Compare { span, .. } |
+            ExprKind::Call { span, .. } |
+            ExprKind::FormattedValue { span, .. } |
+            ExprKind::JoinedStr { span, .. } |
+            ExprKind::Constant { span, .. } |
+            ExprKind::Attribute { span, .. } |
+            ExprKind::Subscript { span, .. } |
+            ExprKind::Starred { span, .. } |
+            ExprKind::Name { span, .. } |
+            ExprKind::List { span, .. } |
+            ExprKind::Tuple { span, .. } |
+            ExprKind::Slice { span, .. } => span,
         }
     }
 }
@@ -617,8 +617,8 @@ pub enum Cmpop {
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct Comprehension<'a> {
-    pub target: &'a Expr<'a>,
-    pub iter: &'a Expr<'a>,
+    pub target: Expr<'a>,
+    pub iter: Expr<'a>,
     pub ifs: &'a [Expr<'a>],
     pub is_async: bool,
 }
@@ -630,11 +630,11 @@ pub struct ExceptHandler<'a> {
     #[educe(Hash(ignore))]
     #[educe(PartialEq(ignore))]
     span: Span,
-    ast_type: Option<&'a Expr<'a>>,
+    ast_type: Option<Expr<'a>>,
     name: Option<Ident<'a>>,
     body: &'a [Stmt<'a>],
 }
-impl<'a> Spanned for Excepthandler<'a> {
+impl<'a> Spanned for ExceptHandler<'a> {
     #[inline]
     fn span(&self) -> Span {
         self.span
@@ -656,7 +656,7 @@ pub struct Arguments<'a> {
 #[educe(PartialEq, Eq, Hash)]
 pub struct Arg<'a> {
     pub arg: Ident<'a>,
-    pub annotation: Option<&'a Expr<'a>>,
+    pub annotation: Option<Expr<'a>>,
     pub type_comment: Option<&'a str>,
     #[educe(Hash(ignore))]
     #[educe(PartialEq(ignore))]
@@ -673,7 +673,7 @@ impl<'a> Spanned for Arg<'a> {
 #[educe(PartialEq, Eq, Hash)]
 pub struct Keyword<'a> {
     pub arg: Option<Ident<'a>>,
-    pub value: &'a Expr<'a>,
+    pub value: Expr<'a>,
     #[educe(Hash(ignore))]
     #[educe(PartialEq(ignore))]
     pub span: Span,
@@ -704,15 +704,15 @@ impl<'a> Spanned for Alias<'a> {
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct WithItem<'a> {
-    pub context_expr: &'a Expr<'a>,
-    pub optional_vars: Option<&'a Expr<'a>>,
+    pub context_expr: Expr<'a>,
+    pub optional_vars: Option<Expr<'a>>,
 }
 
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct MatchCase<'a> {
     pub pattern: &'a Pattern<'a>,
-    pub guard: Option<&'a Expr<'a>>,
+    pub guard: Option<Expr<'a>>,
     pub body: &'a [Stmt<'a>],
 }
 
@@ -724,7 +724,7 @@ pub enum Pattern<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: &'a Expr<'a>,
+        value: Expr<'a>,
     },
     MatchSingleton {
         /// The span of the source
@@ -754,7 +754,7 @@ pub enum Pattern<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        cls: &'a Expr<'a>,
+        cls: Expr<'a>,
         patterns: &'a [Pattern<'a>],
         kwd_attrs: &'a [Ident<'a>],
         kwd_patterns: &'a [Pattern<'a>],

@@ -8,22 +8,31 @@ edition = "2018"
 [features]
 # By default, we use num-bigint because it's more
 # liberally licensed than GMP
-default = ["num-bigint"]
+default = ["num-bigint", "unicode"]
+# Enable unicode support.
+#
+# This is only needed to support named escapes
+# in strings, which requires large generated tables.
+unicode = ["unicode-named-escapes"]
+# Support named escapes in string literals (\N{Example})
+# This requires large tables to be included in
+# the binary.
+unicode-named-escapes = []
 
 [dependencies]
 logos = "0.12"
 memchr = "2.4"
-unicode-xid = "0.2.2"
 either = "1"
 hashbrown = "0.11.2"
 # Rug backend for BigInteger arithmetic
 rug = { version = "1.12", optional = true }
 num-bigint = { version = "0.4.0", optional = true }
 # Bump allocation
-bumpalo = "^3"
+bumpalo = "3.7"
 ordered-float = "2.5"
 # Better derive
 educe = "0.4"
+
 
 [dependencies.lexical-core]
 version = "0.7.6"

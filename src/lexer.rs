@@ -1,5 +1,5 @@
 //! A lexer for python-style source code
-use std::fmt::{self, Formatter, Debug};
+use std::fmt::{self, Formatter, Display, Write, Debug};
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 
@@ -98,6 +98,7 @@ macro_rules! tk {
     (**=) => (Token::DoubleStarEquals);
 }
 
+use lexical_core::write;
 use logos::{Logos, Lexer};
 
 use crate::ast::Span;
@@ -153,7 +154,7 @@ impl PartialEq for Ident<'_> {
         std::ptr::eq(self.text, other.text)
     }
 }
-impl std::fmt::Debug for Ident<'_> {
+impl Debug for Ident<'_> {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(out, "{:?}", self.text)
     }
@@ -171,7 +172,8 @@ impl Default for RawLexerState {
 #[derive(Debug, PartialEq)]
 pub enum LexError {
     InvalidToken,
-    AllocFailed
+    AllocFailed,
+    InvalidString(StringError)
 }
 impl From<AllocError> for LexError {
     #[inline]
@@ -180,7 +182,7 @@ impl From<AllocError> for LexError {
     }
 }
 
-pub struct PythonLexer<'src, 'arena: 'src> {
+pub struct PythonLexer<'src, 'arena> {
     arena: &'arena Allocator,
     raw_lexer: Lexer<'src, RawToken<'src>>,
     known_idents: hashbrown::HashMap<&'src str, &'arena Ident<'arena>>,
@@ -343,11 +345,8 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 Error => {
                     return Err(LexError::InvalidToken)
                 },
-                String(s) => {
-                    Token::StringLiteral(self.arena.alloc(StringInfo {
-                        style: s.style,
-                        original_text: self.arena.alloc_str(s.original_text)?
-                    })?)
+                StartString(style) => {
+                    Token::StringLiteral(self.lex_string(style)?)
                 },
                 // keywords
                 False, Await, Else, Import, Pass, None,
@@ -370,6 +369,64 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 LeftShiftEquals, DoubleStarEquals
             )));
         }
+    }
+    fn lex_string(&mut self, style: StringStyle) -> Result<&'arena StringInfo<'arena>, StringError> {
+        // Estimate the size of the string
+        let originally_remaining = self.raw_lexer.remainder();
+        let original_bytes = originally_remaining.as_bytes();
+        let estimated_size = if style.quote_style.is_triple_string() {
+            ::memchr::memmem::find_iter(
+                style.text(),
+                original_bytes
+            ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
+            .next()
+        } else {
+            ::memchr::memchr_iter(
+                style.quote_style.start_byte(),
+                originally_remaining
+            ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
+            .next()
+        }.unwrap_or(original_bytes.len());
+        let mut buffer = crate::alloc::String::with_capacity(
+            self.arena,
+            estimated_size
+        )?;
+        let mut sub_lexer = StringPart::lexer(
+            self.raw_lexer.remainder()
+        );
+        while let Some(tk) = sub_lexer.next() {
+            match tk {
+                StringPart::EscapedBackslash => {
+                    buffer.push('\\');
+                },
+                StringPart::EscapedSingleQuote => {
+                    buffer.push('\'');
+                },
+                StringPart::EscapedDoubleQuote => {
+                    buffer.push('"');
+                }
+                StringPart::EscapedBackspace => {
+                    buffer.push('\u{08}');
+                },
+                StringPart::EscapedAsciiBell => {
+                    buffer.push('\u{07}');
+                },
+                StringPart::EscapedFormFeed => {
+                    buffer.push('\u{0C}');
+                },
+                StringPart::EscapedTab => {
+                    buffer.push('\t');
+                },
+                StringPart::EscapedCarriageReturn => {
+                    buffer.push('\r');
+                },
+                StringPart::EscapedVerticalTab => {
+                    buffer.push('\u{0A}');
+                },
+
+            }
+        }
+        Err(StringError::UnexpectedEnd)
     }
 }
 
@@ -463,6 +520,9 @@ pub enum Token<'arena> {
     RightShiftEquals, // 44
     LeftShiftEquals, // 45
     DoubleStarEquals, // 46
+    // ***************
+    //    Special Tokens
+    // ***************
     IntegerLiteral(i64),
     FloatLiteral(f64),
     /// An arbitrary-precision integer,
@@ -484,7 +544,7 @@ pub enum Token<'arena> {
     Newline,
 }
 impl<'a> Token<'a> {
-        #[inline]
+    #[inline]
     pub fn static_text(&self) -> Option<&'static str> {
         Some(match *self {
             Token::False => "False",
@@ -570,6 +630,52 @@ impl<'a> Token<'a> {
             Token::DoubleStarEquals => "**=",
             _ => return None
         })
+    }
+}
+impl<'a> Display for Token<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        if let Some(text) = self.static_text() {
+            f.write_str(text)
+        } else {
+            match *self {
+                Token::IntegerLiteral(val) => {
+                    write!(f, "{}", val)
+                }
+                Token::FloatLiteral(flt) => {
+                    write!(f, "{}", flt)
+                },
+                Token::BigIntegerLiteral(big_int) => {
+                    write!(f, "{}", big_int)
+                },
+                Token::StringLiteral(lit) => {
+                    write!(f, "{}", lit.original)
+                }
+                Token::Ident(id) => {
+                    write!(f, "{}", id.text())
+                },
+                Token::IncreaseIndent => {
+                    write!(f, "INDENT")
+                },
+                Token::DecreaseIndent => {
+                    write!(f, "DEDENT")
+                },
+                Token::Newline => {
+                    write!(f, "NEWLINE")
+                },
+                _ => {
+                    /*
+                     * This is logically unreachable,
+                     * because we should've handled
+                     * all operators and keywords in 'static_text'.
+                     * We handle everything else in the match statement.
+                     * However, the compiler can't prove this.
+                     * Just write this as a fallback,
+                     * since a panic would be unhelpful.
+                     */
+                     write!(f, "Token::Unreachable({:?})", self)
+                 }
+            }
+        }
     }
 }
 
@@ -756,16 +862,8 @@ enum RawToken<'src> {
     #[regex(r"0[oO][_0-9]+", parse_octal_int)]
     Integer(Either<i64, BigInt>),
     /// A python string literal
-    ///
-    /// No backslashes or escapes have been interpreted
-    /// in any way. It's up to the parser to do that.
-    ///
-    /// TODO: We should interpret slashes ourselves.
-    /// 
-    /// We should also use a sub-parser, just like shown here:
-    /// https://github.com/maciejhirsz/logos/blob/99d8f4ce/tests/tests/lexer_modes.rs#L11
-    #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string)]
-    String(StringInfo<'src>),
+    #[regex(r##"([rRuUfFbB]|[Ff][rR]|[rR][fFBb]|[Bb][rR])?(["']|"""|''')"##, lex_string_start)]
+    StartString(StringStyle),
     #[regex(r##"(([0-9][_0-9]+)?\.([0-9][_0-9]+)|([0-9][_0-9]+)\.)([eE][+-]?([0-9][_0-9]+))?"##, lex_float)]
     #[regex(r##"(([0-9][_0-9]+)?(\.)?([0-9][_0-9]+)?)([eE][+-]?([0-9][_0-9]+))"##, lex_float)]
     FloatLiteral(f64),
@@ -796,11 +894,12 @@ pub struct StringInfo<'src> {
     /// The original text of this string.
     ///
     /// Backslashes have not been interpreted
+    /// This includes the quotes and formatting prefixes.
     pub original_text: &'src str
 }
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
-    if let Some(line_end) = memchr::memchr(b'\n', lex.remainder().as_bytes()) {
+    if let Some(line_end) = ::memchr::memchr(b'\n', lex.remainder().as_bytes()) {
         lex.bump(line_end + 1);
     } else {
         // No newline -> Everything till EOF is a comment
@@ -923,157 +1022,154 @@ int_parse_func!(
         &s[2..]
     }
 );
-fn lex_string<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> Result<StringInfo<'a>, StringError> {
+#[derive(Logos, Debug)]
+enum StringPart<'src> {
+    #[token(r#"\\"#)]
+    EscapedBackslash,
+    #[token(r#"\'"#)]
+    EscapedSingleQuote,
+    #[token(r#"\""#)]
+    EscapedDoubleQuote,
+    #[token(r#"\a"#)]
+    EscapedAsciiBell,
+    #[token(r#"\b"#)]
+    EscapedBackspace,
+    #[token(r#"\f"#)]
+    EscapedFormFeed,
+    #[token(r#"\n"#)]
+    EscapedNewline,
+    #[token(r#"\r"#)]
+    EscapedCarriageReturn,
+    #[token(r#"\t"#)]
+    EscapedTab,
+    #[token(r#"\v"#)]
+    EscapedVerticalTab,
+    #[regex(r#"\\[0-7][0-7]?[0-7]?"#)]
+    OctalEscape(u8),
+    #[regex(r#"\\x[0-9A-Fa-f][0-9A-Fa-f]"#)]
+    HexEscape(u8),
+    #[token("\\\n")]
+    EscapedLineEnd,
+    #[token("\n")]
+    UnescapedLineEnd,
+    #[regex(r#"\\N\{\w+\}"#)]
+    NamedEscape(&'src str),
+    #[token(r#"""#)]
+    DoubleQuote,
+    #[token(r#"'"#)]
+    SingleQuote,
+    #[token(r###"""""###)]
+    TripleDoubleQuote,
+    #[token(r###"'''"###)]
+    TripleSingleQuote,
+    #[regex(r#"[^\\\n"]+"#)]
+    RegularText(&'src str),
+    #[error]
+    Error
+}
+fn lex_string_start<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> StringStyle {
+    let start_index = lex.span().end;
     /*
      * Already parsed:
      * 1. Optionally: A prefix
      * 2. A string start, either triple string or single string
      */
-    let style = {
-        let slice = lex.slice();
-        /*
-         * NOTE: The lexer isn't affected by string prefixes.
-         * That's interpreted by a later stage in the parser.
-         *
-         * We only care about the particular suffix, whether it's
-         * long string, or short string and whether it uses tripple quotes or single quotes.
-         */
-        let mut index = 1;
-        // NOTE: Known ahead of time to be ASCII
-        let (prefix, raw) = match &slice[..1] {
-            "r" | "R" => {
-                // Valid next chars: [fFbB]?
-                let prefix = match &slice[1..2] {
-                    "f" | "F" => {
-                        index = 2; // consumed
-                        Some(StringPrefix::Formatted)
-                    },
-                    "b" | "B" => {
-                        index = 2; // Consumed
-                        Some(StringPrefix::Bytes)
-                    },
-                    _ => None
-                };
-                (prefix, true)
-            },
-            "u" | "U" => {
-                /*
-                 * NOTE: No other prefix can come after
-                 * a 'u' starting token
-                 */
-                (Some(StringPrefix::Unicode), false)
-            },
-            "f" | "F" => {
-                // Valid next chars: [rR]?
-                let raw = match &slice[1..2] {
-                    "r" | "R" => {
-                        index = 2; // consumed
-                        true
-                    },
-                    _ => false
-                };
-                (Some(StringPrefix::Formatted), raw)
-            },
-            "b" | "B" => {
-                // Valid next chars: [rR]?
-                let raw = match &slice[1..2] {
-                    "r" | "R" => {
-                        index = 2; // consumed
-                        true
-                    },
-                    _ => false
-                };
-                (Some(StringPrefix::Bytes), raw)
-            },
-            c => {
-                if cfg!(debug_assertions) {
-                    match c {
-                        r#"""# | "'" => {},
-                        // NOTE: logos should've guarded against this....
-                        _ => unreachable!("Invalid prefix: {}", c)
-                    }
-                }
-                index = 0;
-                (None, false)
-            }
-        };
-        // Match on the remaining characters
-        let remaining = &slice[index..];
-        let quote_style = match remaining {
-            r#"""# => QuoteStyle::Double,
-            r#"'"# => QuoteStyle::Single,
-            r#"""""# => QuoteStyle::DoubleLong,
-            r#"'''"# => QuoteStyle::SingleLong,
-            _ => unreachable!("Unexpected chars")
-        };
-        StringStyle { prefix, raw, quote_style, }
-    };
+    let slice = lex.slice();
     /*
-     * NOTE: This starts at the end of the
-     * current token. Thus we can essume the next
-     * (non-escaped) instance of `quote_style` closes
-     * the string literal. The only escape character
-     * that we need to worry about is '\'' and '\"'.
-     * for single and double quotes respectively.
+     * NOTE: The lexer isn't affected by string prefixes.
+     * That's interpreted by a later stage in the parser.
+     *
+     * We only care about the particular suffix, whether it's
+     * long string, or short string and whether it uses tripple quotes or single quotes.
      */
-    let remaining_bytes = lex.remainder().as_bytes();
-    let expected_closing_text = style.quote_style.text();
-    for index in ::memchr::memchr2_iter(style.quote_style.start_byte(), b'\n', remaining_bytes) {
-        /*
-         * NOTE: One of the coolest properties of UTF8 is
-         * that if a valid UTF8 substring exists an index `i`,
-         * it can be assumed to be a character boundary.
-         *
-         * In other words, there is no chance we will run
-         * across ACII '\' or '"' characters unless they
-         * are actually valid characters in the UTF8 string :0.
-         * The coolest thing is that this works for BMP and non-BMP
-         * characters too. It's all automatic.
-         *
-         * Therefore, all we have to do to confirm this potential
-         * match is make sure that this character isn't escaped
-         * (by checking bytes[index-1] != '\') and then double-check
-         * to make sure we have the proper clsoing
-         * in the case that we're a triple string.
-         */
-        if remaining_bytes.get(index - 1) == Some(&b'\\') {
-            continue; // Skip escaped quote (or newline)
-        }
-        if remaining_bytes[index] == b'\n' {
-            if style.quote_style.is_triple_string() {
-                continue; // just ignore the newline
-            } else {
-                // newline is an error...
-                return Err(StringError::ForbiddenNewline);
-            }
-        }
-        let end = if style.quote_style.is_triple_string() {
-            match (style.quote_style, remaining_bytes.get(index..index + 3)) {
-                (QuoteStyle::DoubleLong, Some(br#"""""#)) |
-                (QuoteStyle::SingleLong, Some(br"'''")) => {
-                    // We found our closing bytes.
-                    index + 3
+    let mut index = 1;
+    // NOTE: Known ahead of time to be ASCII
+    let (prefix, raw) = match &slice[..1] {
+        "r" | "R" => {
+            // Valid next chars: [fFbB]?
+            let prefix = match &slice[1..2] {
+                "f" | "F" => {
+                    index = 2; // consumed
+                    Some(StringPrefix::Formatted)
                 },
-                (QuoteStyle::DoubleLong, _) |
-                (QuoteStyle::SingleLong, _) => continue,
-                (QuoteStyle::Double, _) |
-                (QuoteStyle::Single, _) => unreachable!()
+                "b" | "B" => {
+                    index = 2; // Consumed
+                    Some(StringPrefix::Bytes)
+                },
+                _ => None
+            };
+            (prefix, true)
+        },
+        "u" | "U" => {
+            /*
+             * NOTE: No other prefix can come after
+             * a 'u' starting token
+             */
+            (Some(StringPrefix::Unicode), false)
+        },
+        "f" | "F" => {
+            // Valid next chars: [rR]?
+            let raw = match &slice[1..2] {
+                "r" | "R" => {
+                    index = 2; // consumed
+                    true
+                },
+                _ => false
+            };
+            (Some(StringPrefix::Formatted), raw)
+        },
+        "b" | "B" => {
+            // Valid next chars: [rR]?
+            let raw = match &slice[1..2] {
+                "r" | "R" => {
+                    index = 2; // consumed
+                    true
+                },
+                _ => false
+            };
+            (Some(StringPrefix::Bytes), raw)
+        },
+        c => {
+            if cfg!(debug_assertions) {
+                match c {
+                    r#"""# | "'" => {},
+                    // NOTE: logos should've guarded against this....
+                    _ => unreachable!("Invalid prefix: {}", c)
+                }
             }
-        } else {
-            index + 1
-        };
-        debug_assert_eq!(&remaining_bytes[index..end], expected_closing_text.as_bytes());
-        lex.bump(end);
-        return Ok(StringInfo {
-            style, original_text: lex.slice(),
-        });
-    }
-    Err(StringError::NoClosingQuote) // no closing paren
+            index = 0;
+            (None, false)
+        }
+    };
+    // Match on the remaining characters
+    let remaining = &slice[index..];
+    let quote_style = match remaining {
+        r#"""# => QuoteStyle::Double,
+        r#"'"# => QuoteStyle::Single,
+        r#"""""# => QuoteStyle::DoubleLong,
+        r#"'''"# => QuoteStyle::SingleLong,
+        _ => unreachable!("Unexpected chars")
+    };
+    StringStyle { prefix, raw, quote_style, }
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum StringError {
-    NoClosingQuote,
-    ForbiddenNewline
+    UnexpectedEnd,
+    ForbiddenNewline,
+    InvalidEscape {
+        c: char,
+    },
+    InvalidNamedEscape {
+        /// The index of the named escape that is invalid,
+        /// relative to the start of the string
+        index: usize
+    },
+    /// Indicates that named escapes are unsupported,
+    /// because the crate was compiled without full unicode support.
+    UnsupportedNamedEscape {
+        /// The index of the unsupported escape
+        index: usize
+    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 
 use crate::ast::Span;
 use crate::lexer::{PythonLexer, Ident, LexError, Token};
-use crate::alloc::Allocator;
+use crate::alloc::{Allocator, AllocError};
 use std::fmt::Display;
 use std::ops::Deref;
 
@@ -16,7 +16,12 @@ pub enum ParseErrorKind {
 }
 #[derive(Debug, Clone)]
 struct ParseErrorInner {
-    span: Span,
+    /// The span of the source location
+    ///
+    /// This is `None` if an out of
+    /// memory error occurs, otherwise
+    /// it must be present
+    span: Option<Span>,
     expected: Option<String>,
     actual: Option<String>,
     kind: ParseErrorKind,
@@ -27,9 +32,28 @@ impl ParseError {
     #[inline]
     pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
         ParseErrorBuilder(ParseErrorInner {
-            span, kind,
+            span: Some(span), kind,
             expected: None, actual: None
         })
+    }
+}
+impl From<AllocError> for ParseError {
+    #[cold]
+    fn from(cause: AllocError) -> ParseError {
+        /*
+         * This is a bit of a conondrum.
+         * We're allocating memory for the error value
+         * even though we have an 'out of memory'
+         * condition.
+         * Realistically though, we'll probably only encounter
+         * OOM if the counter hits the internal limit.
+         */
+        ParseError(Box::new(ParseErrorInner {
+            span: None,
+            expected: None,
+            actual: None,
+            kind: ParseErrorKind::AllocationFailed
+        }))
     }
 }
 pub struct ParseErrorBuilder(ParseErrorInner);
@@ -137,7 +161,7 @@ pub trait IParser<'src, 'a>: Sized {
 }
 #[derive(Debug)]
 pub struct ParseSeperated<
-    'p, 'src, 'a, P: IParser<'src, 'a>,
+    'p, 'src: 'p, 'a: 'p, P: IParser<'src, 'a>,
     ParseFunc, E, T
 > {
     pub parser: &'p mut P,
@@ -244,7 +268,7 @@ impl<'p, 'src, 'a,
                 SeperatorParseState::AwaitingSeperator => {
                     let parser = self.parser.as_mut_parser();
                     match parser.peek() {
-                        Some(tk) if tk.kind == self.seperator => {
+                        Some(tk) if tk == self.seperator => {
                             match parser.skip() {
                                 Ok(()) => {},
                                 Err(e) => return Some(Err(e))
@@ -305,7 +329,7 @@ pub struct Parser<'src, 'a> {
     buffer: VecDeque<SpannedToken<'a>>,
     lexer: PythonLexer<'src, 'a>,
 }
-impl<'a, 'src> Parser<'a, 'src> {
+impl<'src, 'a> Parser<'src, 'a> {
     /// The span of the next token (same as given by peek)
     ///
     /// If this is at the EOF, gives the last token.
@@ -477,7 +501,7 @@ impl<'a, 'src> Parser<'a, 'src> {
                 if let Some(res) = func(&actual) {
                     match self.pop()? {
                         Some(tk) => {
-                           debug_assert_eq!(tk, actual);
+                            debug_assert_eq!(tk, actual.kind);
                             return Ok(res);
                         },
                         None => unreachable!()

@@ -1,8 +1,6 @@
-use std::sync::Arc;
 use std::fmt::{self, Write, Display, Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::borrow::Cow;
 use std::convert::TryFrom;
 
 use hashbrown::HashMap;
@@ -25,15 +23,15 @@ impl<'a> ConstantPool<'a> {
         alloc: impl FnOnce(&'a Allocator) -> Result<&'a ConstantKind<'a>, AllocError>
     ) -> Result<&'a ConstantKind<'a>, AllocError> {
         let arena = self.arena;
-        self.map.raw_entry_mut()
+        Ok(*self.map.raw_entry_mut()
             .from_key(&key)
-            .or_insert_with(|| (alloc(arena), ()))
+            .or_insert_with(|| Ok((alloc(arena)?, ()))).0)
     }
     #[inline]
-    pub fn create(&mut self, key: ConstantKind<'a>) -> Result<&'a ConstantKind, Allocator> {
+    pub fn create(&mut self, key: ConstantKind<'a>) -> Result<&'a ConstantKind<'a>, AllocError> {
         self.create_with(
             key.clone(),
-            move |a| a.alloc(key)
+            move |a| Ok(&*a.alloc(key)?)
         )
     }
     #[inline]
@@ -41,7 +39,7 @@ impl<'a> ConstantPool<'a> {
         let kind = match self.bools[b as usize] {
             Some(cached) => cached,
             None => {
-                let res = self.create(ConstantKind::Bool(b));
+                let res = self.create(ConstantKind::Bool(b))?;
                 self.bools[b as usize] = Some(res);
                 res
             }
@@ -64,32 +62,32 @@ impl<'a> ConstantPool<'a> {
     #[inline]
     pub fn int(&mut self, span: Span, val: i64) -> Result<Constant<'a>, AllocError> {
         Ok(Constant {
-            span, kind: self.creates(ConstantKind::Integer(val))
+            span, kind: self.create(ConstantKind::Integer(val))?
         })
     }
     #[inline]
     pub fn big_int(&mut self, span: Span, val: &'a BigInt) -> Result<Constant<'a>, AllocError> {
         Ok(Constant {
-            span, kind: self.lookup(ConstantKind::BigInteger(val))
+            span, kind: self.create(ConstantKind::BigInteger(val))?
         })
     }
     #[inline]
     pub fn float(&mut self, span: Span, f: FloatLiteral) -> Result<Constant<'a>, AllocError> {
         Ok(Constant {
-            span, kind: self.lookup(ConstantKind::Float(f))
+            span, kind: self.create(ConstantKind::Float(f))?
         })
     }
     #[inline]
     pub fn string(&mut self, span: Span, lit: StringLiteral<'a>) -> Result<Constant<'a>, AllocError> {
         Ok(Constant {
-            span, kind: self.lookup(ConstantKind::String(lit))
+            span, kind: self.create(ConstantKind::String(lit))?
         })
     }
 
     #[inline]
     pub fn complex(&mut self, span: Span, lit: ComplexLiteral) -> Result<Constant<'a>, AllocError> {
         Ok(Constant {
-            span, kind: self.lookup(ConstantKind::Complex(lit))
+            span, kind: self.create(ConstantKind::Complex(lit))?
         })
     }
 }
@@ -105,6 +103,7 @@ impl<'a> Constant<'a> {
         &self.0.kind
     }
 }
+impl<'a> Eq for Constant<'a> {}
 impl<'a> PartialEq for Constant<'a> {
     #[inline]
     fn eq(&self, other: &Constant) -> bool {
@@ -145,11 +144,11 @@ impl<'a> Deref for Constant<'a> {
 impl Spanned for Constant<'_> {
     #[inline]
     fn span(&self) -> Span {
-        self.0.span
+        self.span
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConstantKind<'a> {
     None,
     Bool(bool),
@@ -456,6 +455,10 @@ impl QuoteStyle {
             QuoteStyle::Double => r#"""#,
             QuoteStyle::Single => r"'",
         }
+    }
+    #[inline]
+    pub fn len(self) -> usize {
+        if self.is_triple_string() { 3 } else { 1 }
     }
     #[inline]
     pub fn is_triple_string(self) -> bool {
