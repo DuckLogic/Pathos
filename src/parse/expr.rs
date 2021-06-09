@@ -1,5 +1,3 @@
-use std::iter;
-
 use crate::ast::constants::FloatLiteral;
 use crate::lexer::{Token};
 use crate::ast::{Span, Ident};
@@ -23,7 +21,7 @@ use crate::alloc::{Allocator, AllocError, Vec};
 /// lowest precedence (least binding power)
 /// to highest precedence (most binding power).
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
-enum ExprPrec {
+pub enum ExprPrec {
     /// Assignment expressions (name := val)
     Assignment,
     /// Lambdas `lambda foo: bar`
@@ -138,14 +136,23 @@ impl<'src, 'a> PythonParser<'src, 'a> {
     }
     fn infix_parser(token: &Token<'a>) 
         -> Option<fn(&mut Self, Expr<'a>, &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>> {
-        todo!()
+        Some(match *token {
+            Token::Plus | Token::Minus | 
+            Token::Star | Token::At |
+            Token::Div | Token::Percent |
+            Token::DoubleStar | Token::LeftShift |
+            Token::RightShift | Token::BitwiseOr |
+            Token::BitwiseXor | Token::BitwiseAnd |
+            Token::DoubleSlash => Self::binary_op,
+            _ => return None
+        })
     }
     fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let ident = match **tk {
             Token::Ident(inner) => inner, 
             _ => unreachable!()
         };
-        let ident = self.arena.alloc(Ident::from_raw(tk.span, ident))?;
+        let ident = *self.arena.alloc(Ident::from_raw(tk.span, ident)?)?;
         Ok(&*self.arena.alloc(ExprKind::Name {
             span: tk.span, id: ident,
             ctx: self.expression_context
@@ -153,7 +160,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
     }
     fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let span = tk.span;
-        let kind = None;
+        let mut kind = None;
         let constant = match tk.kind {
             Token::True => self.pool.bool(span, true)?,
             Token::False => self.pool.bool(span, false)?,
@@ -165,7 +172,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                     },
                     _ => {}
                 }
-                self.pool.string(span, lit.clone())?
+                self.pool.string(span, *lit)?
             },
             Token::IntegerLiteral(val) => {
                 self.pool.int(span, val)?
@@ -276,12 +283,11 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             ) {
                 elements.push(val?);
             }
-            let end = self.collection(., collection_type)
+            let end = self.parser.expect(Token::CloseBrace)?.span.end;
             Ok(&*self.arena.alloc(ExprKind::Dict {
                 span: Span { start, end },
                 elements: elements.into_slice()
-
-            }))
+            })?)
         } else {
             let mut elements = vec![in self.arena; first]?;
             for val in self.parse_terminated(
@@ -291,16 +297,21 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             ) {
                 elements.push(val?);
             }
-            let end = self.parser.expect(Token::CloseBracket)?.span.end;
+            let end = self.parser.expect(collection_type.closing_token())?
+                .span.end;
             Ok(collection_type.create_simple(
                 self.arena,
                 Span { start, end },
-                elements.into_iter(),
+                elements.into_slice(),
                 self.expression_context
-            ))
+            )?)
         }
     }
-
+    fn binary_op(
+        &mut self,
+        start_token: &SpannedToken<'a>,
+        left: &SpannedToken,
+    )
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -318,8 +329,8 @@ impl CollectionType {
         span: Span,
         elements: &'a [Expr<'a>],
         ctx: ExprContext
-    ) -> V::Expr {
-        arena.alloc(match self {
+    ) -> Result<Expr<'a>, AllocError> {
+        Ok(&*arena.alloc(match self {
             CollectionType::List => {
                 ExprKind::List { span, elts: elements, ctx }
             },
@@ -330,7 +341,7 @@ impl CollectionType {
                 ExprKind::Tuple { span, elts: elements, ctx }
             },
             CollectionType::Dict => unreachable!()
-        })
+        })?)
     }
     #[inline]
     fn create_comprehension<'a>(

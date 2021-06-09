@@ -1,6 +1,5 @@
 use std::ops::Deref;
 use std::fmt::{self, Formatter, Debug, Display};
-use std::sync::Arc;
 use std::hash::{Hash, Hasher};
 
 pub mod constants;
@@ -87,7 +86,7 @@ impl Hash for Ident<'_> {
 impl Spanned for Ident<'_> {
     #[inline]
     fn span(&self) -> Span {
-        self.as_raw().span
+        self.span
     }
 }
 

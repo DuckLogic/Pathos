@@ -2,6 +2,8 @@
 //!
 //! This is automatically generated from the ASDL file
 
+use crate::parse::ExprPrec;
+
 use super::{Ident, Span, Spanned};
 use super::constants::Constant;
 
@@ -577,41 +579,76 @@ pub enum Boolop {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Operator {
-    Add=1,
-    Sub=2,
-    Mult=3,
-    MatMult=4,
-    Div=5,
-    Mod=6,
-    Pow=7,
-    LShift=8,
-    RShift=9,
-    BitOr=10,
-    BitXor=11,
-    BitAnd=12,
-    FloorDiv=13,
+    Add,
+    Sub,
+    Mult,
+    MatMult,
+    Div,
+    Mod,
+    Pow,
+    LShift,
+    RShift,
+    BitOr,
+    BitXor,
+    BitAnd,
+    FloorDiv,
+}
+impl Operator {
+    #[inline]
+    pub fn precedence(self) -> crate::parse::ExprPrec {
+        use crate::parse::ExprPrec;
+        match self {
+            Operator::Add | Operator::Sub => ExprPrec::Term,
+            Operator::Mult | Operator::MatMult |
+            Operator::Div | Operator::Mod |
+            Operator::FloorDiv => ExprPrec::Factor,
+            Operator::Pow => ExprPrec::Exponentation,
+            Operator::LShift | Operator::RShift => ExprPrec::Shifts,
+            Operator::BitOr => ExprPrec::BitwiseOr,
+            Operator::BitXor => ExprPrec::BitwiseXor,
+            Operator::BitAnd => ExprPrec::BitwiseAnd
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Unaryop {
-    Invert=1,
-    Not=2,
-    UAdd=3,
-    USub=4,
+    Invert,
+    Not,
+    UAdd,
+    USub,
+}
+impl Unaryop {
+    #[inline]
+    pub fn precedence(self) -> ExprPrec {
+        // TODO: Rewrite as macro
+        use crate::parse::ExprPrec;
+        match self {
+            Unaryop::Invert |
+            Unaryop::Not |
+            Unaryop::UAdd |
+            Unaryop::USub => ExprPrec::Unary,
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Cmpop {
-    Eq=1,
-    NotEq=2,
-    Lt=3,
-    LtE=4,
-    Gt=5,
-    GtE=6,
-    Is=7,
-    IsNot=8,
-    In=9,
+    Eq,
+    NotEq,
+    Lt,
+    LtE,
+    Gt,
+    GtE,
+    Is,
+    IsNot,
+    In,
     NotIn=10,
+}
+impl Cmpop {
+    pub fn precedence(self) -> ExprPrec {
+
+    }
 }
 
 #[derive(Educe, Debug, Clone)]

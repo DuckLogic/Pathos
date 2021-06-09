@@ -2,8 +2,10 @@
 use std::fmt::{self, Formatter, Display, Write, Debug};
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
+use std::num::ParseIntError;
 
 use crate::alloc::{Allocator, AllocError};
+use crate::ast::constants::StringLiteral;
 
 use either::Either;
 
@@ -98,7 +100,6 @@ macro_rules! tk {
     (**=) => (Token::DoubleStarEquals);
 }
 
-use lexical_core::write;
 use logos::{Logos, Lexer};
 
 use crate::ast::Span;
@@ -177,8 +178,18 @@ pub enum LexError {
 }
 impl From<AllocError> for LexError {
     #[inline]
-    fn from(e: AllocError) -> LexError {
+    #[cold]
+    fn from(_e: AllocError) -> LexError {
         LexError::AllocFailed
+    }
+}
+impl From<StringError> for LexError {
+    #[cold]
+    fn from(cause: StringError) -> LexError {
+        match cause {
+            StringError::AllocFailed => LexError::AllocFailed,
+            cause => LexError::InvalidString(cause)
+        }
     }
 }
 
@@ -370,23 +381,23 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             )));
         }
     }
-    fn lex_string(&mut self, style: StringStyle) -> Result<&'arena StringInfo<'arena>, StringError> {
+    fn lex_string(&mut self, style: StringStyle) -> Result<&'arena StringLiteral<'arena>, StringError> {
         // Estimate the size of the string
         let originally_remaining = self.raw_lexer.remainder();
         let original_bytes = originally_remaining.as_bytes();
         let estimated_size = if style.quote_style.is_triple_string() {
             ::memchr::memmem::find_iter(
-                style.text(),
+                style.quote_style.text().as_bytes(),
                 original_bytes
             ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
             .next()
         } else {
             ::memchr::memchr_iter(
                 style.quote_style.start_byte(),
-                originally_remaining
+                original_bytes
             ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
             .next()
-        }.unwrap_or(original_bytes.len());
+        }.ok_or(StringError::UnexpectedEnd)?;
         let mut buffer = crate::alloc::String::with_capacity(
             self.arena,
             estimated_size
@@ -395,35 +406,110 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             self.raw_lexer.remainder()
         );
         while let Some(tk) = sub_lexer.next() {
-            match tk {
-                StringPart::EscapedBackslash => {
-                    buffer.push('\\');
-                },
-                StringPart::EscapedSingleQuote => {
-                    buffer.push('\'');
-                },
-                StringPart::EscapedDoubleQuote => {
-                    buffer.push('"');
+            let relative_index = sub_lexer.span().start;
+            match tk.interpret() {
+                InterpretedStringPart::RegularText(text) => {
+                    buffer.push_str(text);
                 }
-                StringPart::EscapedBackspace => {
-                    buffer.push('\u{08}');
+                InterpretedStringPart::EscapedLiteral(e) => {
+                    if style.raw {
+                        // Raw strings don't interpret escapes
+                        buffer.push_str(sub_lexer.slice());
+                    } else {
+                        buffer.push(e);
+                    }
                 },
-                StringPart::EscapedAsciiBell => {
-                    buffer.push('\u{07}');
+                InterpretedStringPart::EscapedLineEnd => {
+                    /*
+                     * "example \
+                     * continued" ->
+                     * Intentionally ignore the line
+                     * ending
+                     */
                 },
-                StringPart::EscapedFormFeed => {
-                    buffer.push('\u{0C}');
+                InterpretedStringPart::UnescapedLineEnd => {
+                    if style.quote_style.is_triple_string() {
+                        buffer.push('\n');
+                    } else {
+                        self.raw_lexer.bump(relative_index);
+                        return Err(StringError::ForbiddenNewline);
+                    }
                 },
-                StringPart::EscapedTab => {
-                    buffer.push('\t');
+                InterpretedStringPart::NamedEscape(name) => {
+                    if style.raw {
+                        buffer.push_str(sub_lexer.slice());
+                        continue;
+                    }
+                    #[cfg(feature = "unicode-named-escapes")]
+                    {
+                        let upper = name.to_uppercase();
+                        buffer.push(match crate::unicode_names::NAMES.binary_search_by_key(&upper.as_str(), |&(name, _)| name) {
+                            Ok(index) => crate::unicode_names::NAMES[index].1,
+                            Err(_) => {
+                                self.raw_lexer.bump(relative_index);
+                                return Err(StringError::InvalidNamedEscape {
+                                    index: relative_index
+                                })
+                            }
+                        });
+                    }
+                    #[cfg(not(feature = "unicode-named-escapes"))]
+                    {
+                        self.raw_lexer.bump(relative_index);
+                        return Err(StringError::UnsupportedNamedEscape {
+                            index: relative_index
+                        });
+                    }
                 },
-                StringPart::EscapedCarriageReturn => {
-                    buffer.push('\r');
+                InterpretedStringPart::UnescapedQuote(quote) => {
+                    match (style.quote_style, quote) {
+                        /*
+                         * Encountering a triple quote while parsing a single
+                         * a single quote is actually *not* an error:
+                         * "a""" -> "a" + "" -> "a"
+                         * In other words, we can treat "a"""
+                         * closing a single quote just like "a"
+                         */
+                        (QuoteStyle::Single, QuoteStyle::SingleLong) |
+                        (QuoteStyle::Double, QuoteStyle::DoubleLong) |
+                        (QuoteStyle::Single, QuoteStyle::Single) |
+                        (QuoteStyle::Double, QuoteStyle::Double) |
+                        (QuoteStyle::SingleLong, QuoteStyle::SingleLong) |
+                        (QuoteStyle::DoubleLong, QuoteStyle::DoubleLong) => {
+                            // We've encountered our closing
+                            self.raw_lexer.bump(relative_index + 1);
+                            return Ok(&*self.arena.alloc(StringLiteral {
+                                style, value: buffer.into_str()
+                            })?)
+                        },
+                        (QuoteStyle::Double, QuoteStyle::Single) |
+                        (QuoteStyle::Double, QuoteStyle::SingleLong) |
+                        (QuoteStyle::Single, QuoteStyle::Double) |
+                        (QuoteStyle::Single, QuoteStyle::DoubleLong) |
+                        /*
+                         * A double or triple
+                         * quote encountering anything
+                         * other than its corresponding 
+                         * closing effectively ignores the quote
+                         */
+                        (QuoteStyle::DoubleLong, _) |
+                        (QuoteStyle::SingleLong, _) => {
+                            buffer.push_str(sub_lexer.slice());
+                        },
+                    }
                 },
-                StringPart::EscapedVerticalTab => {
-                    buffer.push('\u{0A}');
-                },
-
+                InterpretedStringPart::Error => {
+                    self.raw_lexer.bump(relative_index);
+                    let mut chrs = sub_lexer.slice().chars();
+                    if let Some('\\') = chrs.next() {
+                        if let Some(next) = chrs.next() {
+                            return Err(StringError::InvalidEscape {
+                                c: next
+                            })
+                        }
+                    }
+                    return Err(StringError::UnexpectedEnd)
+                }
             }
         }
         Err(StringError::UnexpectedEnd)
@@ -530,7 +616,7 @@ pub enum Token<'arena> {
     BigIntegerLiteral(&'arena BigInt),
     /// A string literal
     // TODO: Actually parse the underlying text
-    StringLiteral(&'arena StringInfo<'arena>),
+    StringLiteral(&'arena StringLiteral<'arena>),
     /// An identifier.
     ///
     /// Do not confuse this with [Token::IncreaseIndent].
@@ -648,7 +734,7 @@ impl<'a> Display for Token<'a> {
                     write!(f, "{}", big_int)
                 },
                 Token::StringLiteral(lit) => {
-                    write!(f, "{}", lit.original)
+                    write!(f, "{}", lit)
                 }
                 Token::Ident(id) => {
                     write!(f, "{}", id.text())
@@ -888,15 +974,6 @@ impl<'src> RawToken<'src> {
 
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct StringInfo<'src> {
-    pub style: StringStyle,
-    /// The original text of this string.
-    ///
-    /// Backslashes have not been interpreted
-    /// This includes the quotes and formatting prefixes.
-    pub original_text: &'src str
-}
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
     if let Some(line_end) = ::memchr::memchr(b'\n', lex.remainder().as_bytes()) {
@@ -1022,53 +1099,7 @@ int_parse_func!(
         &s[2..]
     }
 );
-#[derive(Logos, Debug)]
-enum StringPart<'src> {
-    #[token(r#"\\"#)]
-    EscapedBackslash,
-    #[token(r#"\'"#)]
-    EscapedSingleQuote,
-    #[token(r#"\""#)]
-    EscapedDoubleQuote,
-    #[token(r#"\a"#)]
-    EscapedAsciiBell,
-    #[token(r#"\b"#)]
-    EscapedBackspace,
-    #[token(r#"\f"#)]
-    EscapedFormFeed,
-    #[token(r#"\n"#)]
-    EscapedNewline,
-    #[token(r#"\r"#)]
-    EscapedCarriageReturn,
-    #[token(r#"\t"#)]
-    EscapedTab,
-    #[token(r#"\v"#)]
-    EscapedVerticalTab,
-    #[regex(r#"\\[0-7][0-7]?[0-7]?"#)]
-    OctalEscape(u8),
-    #[regex(r#"\\x[0-9A-Fa-f][0-9A-Fa-f]"#)]
-    HexEscape(u8),
-    #[token("\\\n")]
-    EscapedLineEnd,
-    #[token("\n")]
-    UnescapedLineEnd,
-    #[regex(r#"\\N\{\w+\}"#)]
-    NamedEscape(&'src str),
-    #[token(r#"""#)]
-    DoubleQuote,
-    #[token(r#"'"#)]
-    SingleQuote,
-    #[token(r###"""""###)]
-    TripleDoubleQuote,
-    #[token(r###"'''"###)]
-    TripleSingleQuote,
-    #[regex(r#"[^\\\n"]+"#)]
-    RegularText(&'src str),
-    #[error]
-    Error
-}
 fn lex_string_start<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> StringStyle {
-    let start_index = lex.span().end;
     /*
      * Already parsed:
      * 1. Optionally: A prefix
@@ -1152,8 +1183,119 @@ fn lex_string_start<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> StringStyle {
     };
     StringStyle { prefix, raw, quote_style, }
 }
-#[derive(Debug, PartialEq)]
-enum StringError {
+
+#[derive(Logos, Debug)]
+enum StringPart<'src> {
+    #[token(r#"\\"#)]
+    EscapedBackslash,
+    #[token(r#"\'"#)]
+    EscapedSingleQuote,
+    #[token(r#"\""#)]
+    EscapedDoubleQuote,
+    #[token(r#"\a"#)]
+    EscapedAsciiBell,
+    #[token(r#"\b"#)]
+    EscapedBackspace,
+    #[token(r#"\f"#)]
+    EscapedFormFeed,
+    #[token(r#"\n"#)]
+    EscapedNewline,
+    #[token(r#"\r"#)]
+    EscapedCarriageReturn,
+    #[token(r#"\t"#)]
+    EscapedTab,
+    #[token(r#"\v"#)]
+    EscapedVerticalTab,
+    #[regex(r#"\\[0-7][0-7]?[0-7]?"#, parse_octal_escape)]
+    OctalEscape(u8),
+    #[regex(r#"\\x[0-9A-Fa-f][0-9A-Fa-f]"#, parse_hex_escape)]
+    HexEscape(u8),
+    #[token("\\\n")]
+    EscapedLineEnd,
+    #[token("\n")]
+    UnescapedLineEnd,
+    #[regex(r#"\\N\{\w+\}"#)]
+    NamedEscape(&'src str),
+    #[token(r#"""#)]
+    DoubleQuote,
+    #[token(r#"'"#)]
+    SingleQuote,
+    #[token(r###"""""###)]
+    TripleDoubleQuote,
+    #[token(r###"'''"###)]
+    TripleSingleQuote,
+    #[regex(r#"[^\\\n"]+"#)]
+    RegularText(&'src str),
+    #[error]
+    Error
+}
+impl<'src> StringPart<'src> {
+    /// Collapse this into a more managable form
+    #[inline]
+    fn interpret(self) -> InterpretedStringPart<'src> {
+        InterpretedStringPart::EscapedLiteral(match self {
+            StringPart::EscapedBackslash => '\\',
+            StringPart::EscapedSingleQuote => '\'',
+            StringPart::EscapedDoubleQuote => '\"',
+            StringPart::EscapedBackspace => '\\',
+            StringPart::EscapedAsciiBell => '\u{07}',
+            StringPart::EscapedFormFeed => '\u{0C}',
+            StringPart::EscapedTab => '\t',
+            StringPart::EscapedCarriageReturn => '\r',
+            StringPart::EscapedVerticalTab => '\u{0A}',
+            StringPart::EscapedNewline => '\n',
+            StringPart::OctalEscape(val) => val as char,
+            StringPart::HexEscape(val) => val as char,
+            StringPart::EscapedLineEnd => {
+                return InterpretedStringPart::EscapedLineEnd
+            },
+            StringPart::UnescapedLineEnd => {
+                return InterpretedStringPart::UnescapedLineEnd
+            },
+            StringPart::NamedEscape(name) => {
+                return InterpretedStringPart::NamedEscape(name)
+            },
+            StringPart::DoubleQuote => {
+                return InterpretedStringPart::UnescapedQuote(QuoteStyle::Double)
+            },
+            StringPart::SingleQuote => {
+                return InterpretedStringPart::UnescapedQuote(QuoteStyle::Single)
+            },
+            StringPart::TripleDoubleQuote => {
+                return InterpretedStringPart::UnescapedQuote(QuoteStyle::DoubleLong)
+            },
+
+            StringPart::TripleSingleQuote => {
+                return InterpretedStringPart::UnescapedQuote(QuoteStyle::SingleLong)
+            },
+            StringPart::RegularText(text) => {
+                return InterpretedStringPart::RegularText(text)
+            }
+            StringPart::Error => {
+                return InterpretedStringPart::Error
+            }
+        })
+    }
+}
+enum InterpretedStringPart<'src> {
+    EscapedLiteral(char),
+    NamedEscape(&'src str),
+    EscapedLineEnd,
+    UnescapedLineEnd,
+    UnescapedQuote(QuoteStyle),
+    RegularText(&'src str),
+    Error
+}
+fn parse_octal_escape<'a>(lex: &mut Lexer<'a, StringPart<'a>>) -> Result<u8, ParseIntError> {
+    debug_assert!(lex.slice().starts_with('\\'));
+    u8::from_str_radix(&lex.slice()[1..], 8)
+}
+fn parse_hex_escape<'a>(lex: &mut Lexer<'a, StringPart<'a>>) -> u8 {
+    debug_assert!(lex.slice().starts_with('\\'));
+    u8::from_str_radix(&lex.slice()[1..], 16).unwrap()
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum StringError {
     UnexpectedEnd,
     ForbiddenNewline,
     InvalidEscape {
@@ -1169,6 +1311,14 @@ enum StringError {
     UnsupportedNamedEscape {
         /// The index of the unsupported escape
         index: usize
+    },
+    AllocFailed
+}
+impl From<AllocError> for StringError {
+    #[inline]
+    #[cold]
+    fn from(_cause: AllocError) -> StringError {
+        StringError::AllocFailed
     }
 }
 

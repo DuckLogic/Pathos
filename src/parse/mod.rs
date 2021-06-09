@@ -1,10 +1,13 @@
 use crate::ast::constants::ConstantPool;
 use crate::ast::tree::ExprContext;
+use crate::ast::Ident;
 
 use crate::lexer::Token;
 use self::parser::{ParseError, IParser, Parser};
 
 use crate::alloc::Allocator;
+
+pub use self::expr::ExprPrec;
 
 pub mod parser;
 mod expr;
@@ -15,6 +18,16 @@ pub struct PythonParser<'src, 'a> {
     pub parser: Parser<'src, 'a>,
     expression_context: ExprContext,
     pool: ConstantPool<'a>
+}
+impl<'src, 'a> PythonParser<'src, 'a> {
+    #[inline]
+    pub fn parse_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
+        let span = self.parser.current_span();
+        Ok(&*self.arena.alloc(Ident::from_raw(span, self.parser.expect_map(&"an identifier", |token| match token.kind {
+            Token::Ident(ident) => Some(ident),
+            _ => None
+        })?)?)?)
+    }
 }
 impl<'src, 'a> IParser<'src, 'a> for PythonParser<'src, 'a> {
     #[inline]

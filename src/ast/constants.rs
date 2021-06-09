@@ -7,7 +7,6 @@ use hashbrown::HashMap;
 
 use super::{Span, Spanned};
 use crate::alloc::{Allocator, AllocError};
-use crate::lexer::StringInfo;
 
 pub struct ConstantPool<'a> {
     arena: &'a Allocator,
@@ -19,13 +18,17 @@ impl<'a> ConstantPool<'a> {
     #[inline]
     pub fn create_with(
         &mut self,
-        key: ConstantKind,
+        key: ConstantKind<'a>,
         alloc: impl FnOnce(&'a Allocator) -> Result<&'a ConstantKind<'a>, AllocError>
     ) -> Result<&'a ConstantKind<'a>, AllocError> {
-        let arena = self.arena;
-        Ok(*self.map.raw_entry_mut()
-            .from_key(&key)
-            .or_insert_with(|| Ok((alloc(arena)?, ()))).0)
+        use hashbrown::hash_map::{RawEntryMut};
+        Ok(match self.map.raw_entry_mut()
+            .from_key(&key) {
+            RawEntryMut::Occupied(entry) => *entry.into_key(),
+            RawEntryMut::Vacant(entry) => {
+                entry.insert(alloc(self.arena)?, ()).0
+            }
+        })
     }
     #[inline]
     pub fn create(&mut self, key: ConstantKind<'a>) -> Result<&'a ConstantKind<'a>, AllocError> {
@@ -100,7 +103,7 @@ pub struct Constant<'a> {
 impl<'a> Constant<'a> {
     #[inline]
     pub fn kind(self) -> &'a ConstantKind<'a> {
-        &self.0.kind
+        self.kind
     }
 }
 impl<'a> Eq for Constant<'a> {}
@@ -120,8 +123,9 @@ impl<'a> PartialEq for Constant<'a> {
 }
 impl Hash for Constant<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use pointer hash
-        std::ptr::hash(self, self.0)
+        // Because we expect that values are interned,
+        // we can use the pointer hash
+        std::ptr::hash(self.kind, state)
     }
 }
 impl Display for Constant<'_> {
@@ -162,9 +166,14 @@ pub enum ConstantKind<'a> {
 impl Display for ConstantKind<'_> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match *self {
+            ConstantKind::None => {
+                f.write_str("None")
+            },
+            ConstantKind::Bool(true) => f.write_str("True"),
+            ConstantKind::Bool(false) => f.write_str("False"),
             ConstantKind::Tuple(ref vals) => {
                 f.write_str("(")?;
-                for val in vals {
+                for val in *vals {
                     write!(f, "{},", val)?;
                 }
                 f.write_str(")")?;
@@ -287,6 +296,8 @@ impl Display for ComplexLiteral {
 /// between single and triple quotes.
 #[derive(Debug, Copy, Clone)]
 pub struct StringLiteral<'a> {
+    /// The value of the string, with all escapes,
+    /// newlines and backslashes fully interpreted
     pub value: &'a str,
     pub style: StringStyle,
 }

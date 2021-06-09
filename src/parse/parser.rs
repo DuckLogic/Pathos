@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::marker::PhantomData;
 
 use crate::ast::Span;
-use crate::lexer::{PythonLexer, Ident, LexError, Token};
+use crate::lexer::{PythonLexer, StringError, LexError, Token};
 use crate::alloc::{Allocator, AllocError};
 use std::fmt::Display;
 use std::ops::Deref;
@@ -12,7 +12,8 @@ pub enum ParseErrorKind {
     InvalidToken,
     AllocationFailed,
     UnexpectedEof,
-    UnexpectedToken
+    UnexpectedToken,
+    InvalidString(StringError)
 }
 #[derive(Debug, Clone)]
 struct ParseErrorInner {
@@ -39,7 +40,7 @@ impl ParseError {
 }
 impl From<AllocError> for ParseError {
     #[cold]
-    fn from(cause: AllocError) -> ParseError {
+    fn from(_cause: AllocError) -> ParseError {
         /*
          * This is a bit of a conondrum.
          * We're allocating memory for the error value
@@ -59,17 +60,17 @@ impl From<AllocError> for ParseError {
 pub struct ParseErrorBuilder(ParseErrorInner);
 impl ParseErrorBuilder {
     #[inline]
-    pub fn expected(self, f: impl ToString) -> Self {
+    pub fn expected(mut self, f: impl ToString) -> Self {
         self.0.expected = Some(f.to_string());
         self
     }
     #[inline]
-    pub fn actual(self, f: impl ToString) -> Self {
+    pub fn actual(mut self, f: impl ToString) -> Self {
         self.0.actual = Some(f.to_string());
         self
     }
     #[inline]
-    pub fn build(self) -> ParseError {
+    pub fn build(mut self) -> ParseError {
         ParseError(Box::new(ParseErrorInner {
             span: self.0.span,
             kind: self.0.kind,
@@ -351,7 +352,7 @@ impl<'src, 'a> Parser<'src, 'a> {
             None => None
         }
     }
-    fn assert_empty(&self) -> bool {
+    fn assert_empty(&mut self) -> bool {
         debug_assert_eq!(
             self.lexer.next(),
             Ok(None)
@@ -459,7 +460,8 @@ impl<'src, 'a> Parser<'src, 'a> {
                             // TODO: Handle OOM without boxing errors.....
                             ParseErrorKind::AllocationFailed
                         },
-                        LexError::InvalidToken => ParseErrorKind::InvalidToken
+                        LexError::InvalidToken => ParseErrorKind::InvalidToken,
+                        LexError::InvalidString(cause) => ParseErrorKind::InvalidString(cause),
                     };
                     return Err(ParseError::builder(
                         lexer_span, kind
@@ -527,11 +529,5 @@ impl<'src, 'a> Parser<'src, 'a> {
                 None => "EOF".to_string()
             })
             .build()
-    }
-    pub fn pop_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
-        self.expect_map(&"an identifier", |token| match token.kind {
-            Token::Ident(ident) => Some(ident),
-            _ => None
-        })
     }
 }

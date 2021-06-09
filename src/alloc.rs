@@ -107,10 +107,10 @@ impl<'arena, T> Vec<'arena, T> {
         let new_memory = self.arena.alloc_layout(new_layout)?;
         unsafe {
             self.ptr.as_ptr().copy_to_nonoverlapping(
-                new_memory.as_ptr(),
+                new_memory.as_ptr() as *mut T,
                 self.len
             );
-            self.ptr = new_memory;
+            self.ptr = new_memory.cast::<T>();
             Ok(())
         }
     }
@@ -196,7 +196,11 @@ impl<'arena> String<'arena> {
     }
     #[inline]
     pub fn into_str(self) -> &'arena str {
-        std::str::from_utf8_unchecked_mut(self.bytes.into_slice())
+        unsafe {
+            std::str::from_utf8_unchecked_mut(
+                self.bytes.into_slice()
+            )
+        }
     }
 }
 
@@ -221,7 +225,7 @@ impl Display for AllocError {
 impl Error for AllocError {}
 impl From<LayoutError> for AllocError {
  #[inline]
-    fn from(cause: LayoutError) -> Self {
+    fn from(_cause: LayoutError) -> Self {
         AllocError
     }   
 }
