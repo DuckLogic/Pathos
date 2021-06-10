@@ -20,6 +20,13 @@ pub struct PythonParser<'src, 'a> {
     pool: ConstantPool<'a>
 }
 impl<'src, 'a> PythonParser<'src, 'a> {
+    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>) -> Self {
+        PythonParser {
+            arena, parser,
+            expression_context: Default::default(),
+            pool: ConstantPool::new(arena)
+        }
+    }
     #[inline]
     pub fn parse_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
         let span = self.parser.current_span();

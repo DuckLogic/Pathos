@@ -1,6 +1,6 @@
 use crate::ast::constants::FloatLiteral;
 use crate::lexer::{Token};
-use crate::ast::{Span, Ident};
+use crate::ast::{Ident, Span, Spanned};
 use crate::ast::tree::*;
 
 use super::parser::{SpannedToken, IParser, ParseError};
@@ -8,6 +8,22 @@ use super::{PythonParser};
 
 use crate::vec;
 use crate::alloc::{Allocator, AllocError, Vec};
+
+struct PrefixParser<'src, 'a> {
+    func: fn(
+        parser: &mut PythonParser<'src, 'a>,
+        token: &SpannedToken<'a>
+    ) -> Result<Expr<'a>, ParseError>,
+    prec: ExprPrec
+}
+struct InfixParser<'src, 'a> {
+    func: fn(
+        parser: &mut PythonParser<'src, 'a>,
+        left: Expr<'a>,
+        token: &SpannedToken<'a>
+    ) -> Result<Expr<'a>, ParseError>,
+    prec: ExprPrec
+}
 
 /// The precedence of an expression
 ///
@@ -80,10 +96,6 @@ pub enum ExprPrec {
     /// `{exprs...}`
     Atom,
 }
-impl ExprPrec {
-    const MAX: ExprPrec = ExprPrec::Atom;
-    const MIN: ExprPrec = ExprPrec::Assignment;
-}
 
 impl<'src, 'a> PythonParser<'src, 'a> {
     pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
@@ -92,36 +104,46 @@ impl<'src, 'a> PythonParser<'src, 'a> {
     /// A pratt parser for python expressions
     fn parse_prec(&mut self, prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
         let token = self.parser.peek_tk();
-        let left = match (token, token.as_ref().map(|tk| &tk.kind)
+        let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
-            (Some(tk), Some(func)) => {
+            (Some(tk), Some(parser)) => {
                 self.parser.skip()?;
-                func(&mut *self, &tk)?
+                (parser.func)(&mut *self, &tk)?
             },
             _ => {
                 return Err(self.parser.unexpected(&"an expression"))
             }
         };
-        let next_token = match self.parser.peek_tk() {
-            Some(tk) => tk, 
-            None => return Ok(left)
-        };
-        match Self::infix_parser(&next_token.kind) {
-            Some(func) => {
-                func(self, left, &next_token)
-            },
-            None => Ok(left) // just give left
+        loop {
+            let next_token = match self.parser.peek_tk() {
+                Some(tk) => tk, 
+                None => return Ok(left)
+            };
+            match Self::infix_parser(&next_token.kind) {
+                Some(parser) => {
+                    if parser.prec >= prec {
+                        return Ok(left)
+                    }
+                    left = (parser.func)(self, left, &next_token)?
+                },
+                None => return Ok(left) // just give left
+            }
         }
     }
-    fn prefix_parser(token: &Token<'a>) 
-        -> Option<fn(&mut Self, &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>> {
+    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a>> {
         Some(match *token {
-            Token::Ident(_) => Self::name,
+            Token::Ident(_) => PrefixParser {
+                func: Self::name,
+                prec: ExprPrec::Atom
+            },
             Token::True | Token::False |
             Token::None | Token::StringLiteral(_) |
             Token::IntegerLiteral(_) |
             Token::BigIntegerLiteral(_) |
-            Token::FloatLiteral(_) => Self::constant,
+            Token::FloatLiteral(_) => PrefixParser {
+                func: Self::constant,
+                prec: ExprPrec::Atom
+            },
             /*
              * For constructing a list, a set or a dictionary
              * Python provides special syntax called “displays”,
@@ -130,22 +152,51 @@ impl<'src, 'a> PythonParser<'src, 'a> {
              * - they are computed via a set of looping and filtering
              *   instructions, called a comprehension.
              */
-            Token::OpenBracket => Self::list_display,
+            Token::OpenBracket => PrefixParser {
+                func: Self::list_display,
+                prec: ExprPrec::Atom
+            },
+
+            Token::OpenParen => PrefixParser {
+                func: Self::parentheses,
+                prec: ExprPrec::Atom
+            },
+            Token::OpenBrace => PrefixParser {
+                func: Self::dict_display,
+                prec: ExprPrec::Atom
+            },
             _ => return None
         })
     }
-    fn infix_parser(token: &Token<'a>) 
-        -> Option<fn(&mut Self, Expr<'a>, &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>> {
+    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a>> {
         Some(match *token {
             Token::Plus | Token::Minus | 
             Token::Star | Token::At |
-            Token::Div | Token::Percent |
+            Token::Slash | Token::Percent |
             Token::DoubleStar | Token::LeftShift |
             Token::RightShift | Token::BitwiseOr |
-            Token::BitwiseXor | Token::BitwiseAnd |
-            Token::DoubleSlash => Self::binary_op,
+            Token::BitwiseXor | Token::Ampersand |
+            Token::DoubleSlash => InfixParser {
+                func: Self::binary_op,
+                prec: Operator::from_token(token)
+                    .unwrap().precedence()
+            },
             _ => return None
         })
+    }
+    fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        let op = match Operator::from_token(&tk.kind) {
+            Some(it) => it,
+            _ => unreachable!(),
+        };
+        let right = self.expression()?;
+        let span = Span {
+            start: left.span().start,
+            end: right.span().end
+        };
+        Ok(&*self.arena.alloc(ExprKind::BinOp {
+            left, span, op, right
+        })?)
     }
     fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let ident = match **tk {
@@ -200,6 +251,13 @@ impl<'src, 'a> PythonParser<'src, 'a> {
     ) -> Result<Comprehension<'a>, ParseError> {
         todo!()
     }
+
+    fn parentheses(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        self.collection(tk, CollectionType::Tuple)
+    }
+    fn dict_display(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        self.collection(tk, CollectionType::Dict)
+    }
     fn list_display(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         self.collection(tk, CollectionType::List)
     }
@@ -212,8 +270,29 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             start_token.kind,
             collection_type.opening_token()
         );
-        // NOTE: Sets are never the default
+        /*
+         * NOTE: Sets are never the default.
+         * We always start parsing assuming we're
+         * dealing with a dict, then switch to
+         * a set later depending on the future syntax.
+         */
         assert!(!collection_type.is_set());
+        /*
+         * NOTE: Tuples need special handling.
+         * because they are created by the *COMMA*
+         * operator and not by parentheses.
+         *
+         * However in our parser, they are
+         * essentially implemented both ways.
+         * We start out parsing a `(expr...` as a 'tuple'.
+         * However, if there is only one element
+         * and a closing paren without any comma
+         * then it's clear the parens are for grouping only.
+         *
+         * NOTE: We still need to handle tuples created
+         * without the parens, those that are using
+         * the comma operator only (like `a, b = c, d`)
+         */
         let start = start_token.span.start;
         if self.parser.peek() == Some(collection_type.closing_token()) {
             let end = self.parser.current_span().end;
@@ -270,7 +349,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                 )?)
             }
         } else if collection_type.is_dict() {
-            let mut elements = vec![in self.arena; (first, fisrt_value.unwrap())]?;
+            let mut elements: Vec<(Expr<'a>, Expr<'a>)> = vec![in self.arena; (first, fisrt_value.unwrap())]?;
             for val in self.parse_terminated(
                 Token::Comma,
                 Token::CloseBrace,
@@ -281,13 +360,21 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                     Ok((key, value))
                 }
             ) {
-                elements.push(val?);
+                elements.push(val?)?;
             }
             let end = self.parser.expect(Token::CloseBrace)?.span.end;
             Ok(&*self.arena.alloc(ExprKind::Dict {
                 span: Span { start, end },
                 elements: elements.into_slice()
             })?)
+        } else if collection_type.is_tuple() && self.parser.peek() == Some(Token::CloseParen) {
+            self.parser.expect(Token::CloseParen)?;
+            /*
+             * These parentheses function for
+             * grouping purposes only.
+             * See note above.
+             */
+            Ok(first)
         } else {
             let mut elements = vec![in self.arena; first]?;
             for val in self.parse_terminated(
@@ -295,7 +382,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                 collection_type.closing_token(),
                 |parser| parser.expression()
             ) {
-                elements.push(val?);
+                elements.push(val?)?;
             }
             let end = self.parser.expect(collection_type.closing_token())?
                 .span.end;
@@ -307,11 +394,6 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             )?)
         }
     }
-    fn binary_op(
-        &mut self,
-        start_token: &SpannedToken<'a>,
-        left: &SpannedToken,
-    )
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -369,6 +451,10 @@ impl CollectionType {
     #[inline]
     fn is_set(self) -> bool {
         matches!(self, CollectionType::Set)
+    }
+    #[inline]
+    fn is_tuple(self) -> bool {
+        matches!(self, CollectionType::Tuple)
     }
     #[inline]
     fn is_dict(self) -> bool {

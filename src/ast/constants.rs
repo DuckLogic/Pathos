@@ -15,6 +15,12 @@ pub struct ConstantPool<'a> {
     bools: [Option<&'a ConstantKind<'a>>; 2],
 }
 impl<'a> ConstantPool<'a> {
+    pub fn new(arena: &'a Allocator) -> Self {
+        ConstantPool {
+            arena, map: HashMap::new(),
+            none: None, bools: [None; 2],
+        }
+    }
     #[inline]
     pub fn create_with(
         &mut self,

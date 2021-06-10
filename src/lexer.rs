@@ -1,5 +1,5 @@
 //! A lexer for python-style source code
-use std::fmt::{self, Formatter, Display, Write, Debug};
+use std::fmt::{self, Formatter, Display, Debug};
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 use std::num::ParseIntError;
@@ -409,14 +409,14 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             let relative_index = sub_lexer.span().start;
             match tk.interpret() {
                 InterpretedStringPart::RegularText(text) => {
-                    buffer.push_str(text);
+                    buffer.push_str(text)?;
                 }
                 InterpretedStringPart::EscapedLiteral(e) => {
                     if style.raw {
                         // Raw strings don't interpret escapes
-                        buffer.push_str(sub_lexer.slice());
+                        buffer.push_str(sub_lexer.slice())?;
                     } else {
-                        buffer.push(e);
+                        buffer.push(e)?;
                     }
                 },
                 InterpretedStringPart::EscapedLineEnd => {
@@ -429,7 +429,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 },
                 InterpretedStringPart::UnescapedLineEnd => {
                     if style.quote_style.is_triple_string() {
-                        buffer.push('\n');
+                        buffer.push('\n')?;
                     } else {
                         self.raw_lexer.bump(relative_index);
                         return Err(StringError::ForbiddenNewline);
@@ -437,7 +437,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 },
                 InterpretedStringPart::NamedEscape(name) => {
                     if style.raw {
-                        buffer.push_str(sub_lexer.slice());
+                        buffer.push_str(sub_lexer.slice())?;
                         continue;
                     }
                     #[cfg(feature = "unicode-named-escapes")]
@@ -451,7 +451,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                                     index: relative_index
                                 })
                             }
-                        });
+                        })?;
                     }
                     #[cfg(not(feature = "unicode-named-escapes"))]
                     {
@@ -494,7 +494,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                          */
                         (QuoteStyle::DoubleLong, _) |
                         (QuoteStyle::SingleLong, _) => {
-                            buffer.push_str(sub_lexer.slice());
+                            buffer.push_str(sub_lexer.slice())?;
                         },
                     }
                 },

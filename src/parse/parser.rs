@@ -331,6 +331,11 @@ pub struct Parser<'src, 'a> {
     lexer: PythonLexer<'src, 'a>,
 }
 impl<'src, 'a> Parser<'src, 'a> {
+    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Self {
+        Parser {
+            lexer, buffer: VecDeque::new(), arena
+        }
+    }
     /// The span of the next token (same as given by peek)
     ///
     /// If this is at the EOF, gives the last token.
@@ -366,7 +371,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     #[inline]
     pub fn look_ahead(&mut self, amount: usize) -> Result<Option<SpannedToken<'a>>, ParseError> {
         if amount >= self.buffer.len() {
-            self.fill_buffer(amount + 1);
+            self.fill_buffer(amount + 1)?;
         }
         let index = self.buffer.len()
             .wrapping_sub(1)
@@ -430,7 +435,7 @@ impl<'src, 'a> Parser<'src, 'a> {
                  * by requesting to fill the buffer to
                  * length two.
                  */
-                self.fill_buffer(2);
+                self.fill_buffer(2)?;
                 #[cfg(debug_assertions)] {
                     match self.buffer.len() {
                         0 => unreachable!(),

@@ -19,10 +19,12 @@ macro_rules! count_exprs {
 macro_rules! vec {
     (in $arena:expr) => ($crate::alloc::Vec::new());
     (in $arena:expr; $($element:expr),*) => ({
-        const COUNT: usize = $crate::count_exprs!($($element),*);
-        match $crate::alloc::Vec::with_capacity($arena, COUNT) {
+        match $crate::alloc::Vec::with_capacity(
+            $arena,
+            $crate::count_exprs!($($element),*)
+        ) {
             Ok(mut res) => {
-                $(res.push($element);)*
+                $(res.push($element).unwrap();)*
                 Ok(res)
             },
             Err(e) => Err(e)
@@ -102,7 +104,6 @@ impl<'arena, T> Vec<'arena, T> {
          * of `cap` is `usize`.
          */
         let cap = cmp::max(self.capacity * 2, required_cap);
-        debug_assert!(cap >= 0);
         let new_layout = Layout::array::<T>(cap)?;
         let new_memory = self.arena.alloc_layout(new_layout)?;
         unsafe {
