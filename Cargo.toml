@@ -32,6 +32,8 @@ bumpalo = "3.7"
 ordered-float = "2.5"
 # Better derive
 educe = "0.4"
+# Errors
+thiserror = "1"
 
 
 [dependencies.lexical-core]

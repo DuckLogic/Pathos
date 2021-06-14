@@ -1,7 +1,10 @@
+#![feature(
+    backtrace, // Better errors ;)
+)]
 use alloc::Allocator;
 use ast::constants::ConstantPool;
 use lexer::{PythonLexer};
-use parse::{PythonParser, parser::{Parser, ParseError}};
+use parse::{PythonParser, parser::{Parser}};
 
 pub mod alloc;
 pub mod lexer;
@@ -9,6 +12,8 @@ pub mod ast;
 mod parse;
 #[cfg(feature = "unicode-named-escapes")]
 mod unicode_names;
+
+pub use self::parse::parser::ParseError;
 
 /// The mode of operation to parse the code in
 ///

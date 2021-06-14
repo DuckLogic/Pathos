@@ -6,6 +6,7 @@ use std::num::ParseIntError;
 
 use crate::alloc::{Allocator, AllocError};
 use crate::ast::constants::StringLiteral;
+use thiserror::Error;
 
 use either::Either;
 
@@ -402,7 +403,7 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                 original_bytes
             ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
             .next()
-        }.ok_or(StringError::UnexpectedEnd)?;
+        }.ok_or(StringError::MissingEnd)?;
         let mut buffer = crate::alloc::String::with_capacity(
             self.arena,
             estimated_size
@@ -513,11 +514,11 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
                             })
                         }
                     }
-                    return Err(StringError::UnexpectedEnd)
+                    return Err(StringError::MissingEnd)
                 }
             }
         }
-        Err(StringError::UnexpectedEnd)
+        Err(StringError::MissingEnd)
     }
 }
 
@@ -1299,24 +1300,30 @@ fn parse_hex_escape<'a>(lex: &mut Lexer<'a, StringPart<'a>>) -> u8 {
     debug_assert!(lex.slice().starts_with('\\'));
     u8::from_str_radix(&lex.slice()[1..], 16).unwrap()
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum StringError {
-    UnexpectedEnd,
+    #[error("Missing end of quote")]
+    MissingEnd,
+    #[error("Forbidden newline inside string")]
     ForbiddenNewline,
+    #[error("Invalid escape in string {c:?}")]
     InvalidEscape {
         c: char,
     },
+    #[error("Invalid named escape (offset {index})")]
     InvalidNamedEscape {
         /// The index of the named escape that is invalid,
         /// relative to the start of the string
         index: usize
     },
+    #[error("Named escapes are unsupported")]
     /// Indicates that named escapes are unsupported,
     /// because the crate was compiled without full unicode support.
     UnsupportedNamedEscape {
         /// The index of the unsupported escape
         index: usize
     },
+    #[error("Allocation failed")]
     AllocFailed
 }
 impl From<AllocError> for StringError {

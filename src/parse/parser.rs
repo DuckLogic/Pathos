@@ -4,8 +4,11 @@ use std::marker::PhantomData;
 use crate::ast::Span;
 use crate::lexer::{PythonLexer, StringError, LexError, Token};
 use crate::alloc::{Allocator, AllocError};
-use std::fmt::Display;
+use std::fmt::{self, Display, Formatter};
 use std::ops::Deref;
+use std::backtrace::Backtrace;
+use std::error::Error;
+use std::option::Option::None;
 
 #[derive(Debug, Clone)]
 pub enum ParseErrorKind {
@@ -15,7 +18,7 @@ pub enum ParseErrorKind {
     UnexpectedToken,
     InvalidString(StringError)
 }
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ParseErrorInner {
     /// The span of the source location
     ///
@@ -26,17 +29,70 @@ struct ParseErrorInner {
     expected: Option<String>,
     actual: Option<String>,
     kind: ParseErrorKind,
+    backtrace: Backtrace
 }
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ParseError(Box<ParseErrorInner>);
 impl ParseError {
     #[inline]
     pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
         ParseErrorBuilder(ParseErrorInner {
             span: Some(span), kind,
-            expected: None, actual: None
+            expected: None, actual: None,
+            backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
         })
     }
+}
+impl Display for ParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self.0.kind {
+            ParseErrorKind::InvalidToken => {
+                f.write_str("Invalid token")?;
+            }
+            ParseErrorKind::AllocationFailed => {
+                f.write_str("Allocation failed")?;
+            }
+            ParseErrorKind::UnexpectedEof => {
+                f.write_str("Unexpected EOF")?;
+            }
+            ParseErrorKind::UnexpectedToken => {
+                f.write_str("Unexpected token")?;
+            }
+            ParseErrorKind::InvalidString(ref cause) => {
+                write!(f, "Invalid string ({})", cause)?;
+            }
+        }
+        match (&self.0.expected, &self.0.actual) {
+            (Some(ref expected), Some(ref actual)) => {
+                write!(f, ": Expected {:?}, but got {:?}", expected, actual)?;
+            },
+            (Some(ref expected), None) => {
+                write!(f, ": Expected {:?}", expected)?;
+            },
+            (None, Some(ref actual)) => {
+                write!(f, ": Got {:?}", actual)?;
+            },
+            (None, None) => {}
+        }
+        if let Some(span) = self.0.span {
+            write!(f, " @ {}", span)?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self.0.kind {
+            ParseErrorKind::InvalidString(ref cause) => Some(cause),
+            _ => None
+        }
+    }
+
+    #[inline]
+    fn backtrace(&self) -> Option<&Backtrace> {
+        Some(&self.0.backtrace)
+    }
+
 }
 impl From<AllocError> for ParseError {
     #[cold]
@@ -53,7 +109,8 @@ impl From<AllocError> for ParseError {
             span: None,
             expected: None,
             actual: None,
-            kind: ParseErrorKind::AllocationFailed
+            kind: ParseErrorKind::AllocationFailed,
+            backtrace: Backtrace::capture()
         }))
     }
 }
@@ -75,7 +132,8 @@ impl ParseErrorBuilder {
             span: self.0.span,
             kind: self.0.kind,
             expected: self.0.expected.take(),
-            actual: self.0.actual.take()
+            actual: self.0.actual.take(),
+            backtrace: Backtrace::capture()
         }))
     }
 }
