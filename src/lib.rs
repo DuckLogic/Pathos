@@ -26,12 +26,14 @@ pub enum ParseMode {
 pub fn parse<'a, 'src>(
     arena: &'a Allocator,
     text: &'src str,
-    mode: ParseMode
+    mode: ParseMode,
+    pool: &mut ConstantPool<'a>
 ) -> Result<ast::tree::Mod<'a>, ParseError> {
     let lexer = PythonLexer::new(arena, text);
     let mut parser = PythonParser::new(
         arena,
-        Parser::new(arena, lexer)
+        Parser::new(arena, lexer)?,
+        pool
     );
     match mode {
         ParseMode::Expression => {

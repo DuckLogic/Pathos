@@ -329,7 +329,7 @@ impl<'p, 'src, 'a,
                     match parser.peek() {
                         Some(tk) if tk == self.seperator => {
                             match parser.skip() {
-                                Ok(()) => {},
+                                Ok(_) => {},
                                 Err(e) => return Some(Err(e))
                             };
                             self.state = SeperatorParseState::AwaitingNext;
@@ -389,10 +389,12 @@ pub struct Parser<'src, 'a> {
     lexer: PythonLexer<'src, 'a>,
 }
 impl<'src, 'a> Parser<'src, 'a> {
-    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Self {
-        Parser {
-            lexer, buffer: VecDeque::new(), arena
-        }
+    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
+        let mut res = Parser {
+            lexer, buffer: VecDeque::with_capacity(1), arena
+        };
+        res.fill_buffer(1)?;
+        Ok(res)
     }
     /// The span of the next token (same as given by peek)
     ///
@@ -440,10 +442,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     ///
     /// This should be used in conjunction with peek.
     /// For example:
-    /// ````no_run
-    /// # fn result(val: i64) -> i64 {} 
-    /// # fn taco() -> Result<i64, ParseError> {
-    /// # let parser: Parser<'static, 'static> = todo!();
+    /// ````ignore
     /// match parser.peek()?.kind {
     ///     Token::Integer(val) => {
     ///         parser.skip()?;
@@ -451,16 +450,15 @@ impl<'src, 'a> Parser<'src, 'a> {
     ///     }
     ///     _ => return Err(())
     /// }
-    /// # }
     /// ````
     /// This is just like `pop`, but doesn't return the reuslt token.
     ///
     /// NOTE: Panics on EOF. It is the caller's responsibility to check
     /// this. This should be fine if you've already done a call to `peek`.
     #[inline]
-    pub fn skip(&mut self) -> Result<(), ParseError> {
+    pub fn skip(&mut self) -> Result<Token<'a>, ParseError> {
         match self.pop() {
-            Ok(Some(SpannedToken { .. })) => Ok(()),
+            Ok(Some(SpannedToken { kind, .. })) => Ok(kind),
             Ok(None) => unreachable!("EOF"),
             Err(e) => Err(e)
         }
@@ -504,7 +502,7 @@ impl<'src, 'a> Parser<'src, 'a> {
             },
             _ => {},
         }
-        Ok(self.buffer.pop_front())
+        Ok(self.buffer.pop_back())
     }
     #[cold]
     fn fill_buffer(&mut self, amount: usize) -> Result<bool, ParseError> {

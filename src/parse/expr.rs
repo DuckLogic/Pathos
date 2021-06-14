@@ -9,16 +9,17 @@ use super::{PythonParser};
 use crate::vec;
 use crate::alloc::{Allocator, AllocError, Vec};
 
-struct PrefixParser<'src, 'a> {
+struct PrefixParser<'src, 'a, 'p> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a>,
+        parser: &mut PythonParser<'src, 'a, 'p>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
+    // TODO: Is this needed?
     prec: ExprPrec
 }
-struct InfixParser<'src, 'a> {
+struct InfixParser<'src, 'a, 'p> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a>,
+        parser: &mut PythonParser<'src, 'a, 'p>,
         left: Expr<'a>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
@@ -97,7 +98,7 @@ pub enum ExprPrec {
     Atom,
 }
 
-impl<'src, 'a> PythonParser<'src, 'a> {
+impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
         self.parse_prec(ExprPrec::Atom)
     }
@@ -107,7 +108,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
             (Some(tk), Some(parser)) => {
-                self.parser.skip()?;
+                dbg!(self.parser.skip()?);
                 (parser.func)(&mut *self, &tk)?
             },
             _ => {
@@ -124,13 +125,14 @@ impl<'src, 'a> PythonParser<'src, 'a> {
                     if parser.prec >= prec {
                         return Ok(left)
                     }
+                    self.parser.skip()?;
                     left = (parser.func)(self, left, &next_token)?
                 },
                 None => return Ok(left) // just give left
             }
         }
     }
-    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a>> {
+    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p>> {
         Some(match *token {
             Token::Ident(_) => PrefixParser {
                 func: Self::name,
@@ -168,7 +170,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
             _ => return None
         })
     }
-    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a>> {
+    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p>> {
         Some(match *token {
             Token::Plus | Token::Minus | 
             Token::Star | Token::At |
@@ -490,12 +492,14 @@ mod test {
     use crate::ast::{Span, Constant};
     use crate::ast::constants::ConstantPool;
     use crate::{ident, expr};
+    use std::error::Error;
+    use std::backtrace::Backtrace;
 
-    struct TestContext<'a> {
+    struct TestContext<'a, 'p> {
         arena: &'a Allocator,
-        pool: ConstantPool<'a>
+        pool: &'p mut ConstantPool<'a>
     }
-    impl<'a> TestContext<'a> {
+    impl<'a, 'p> TestContext<'a, 'p> {
         fn int(&mut self, i: i64) -> Expr<'a> {
             let val = self.pool.int(DUMMY, i).unwrap();
             self.constant(val)
@@ -508,13 +512,20 @@ mod test {
             }).unwrap()
         }
     }
-    fn test_expr(s: &str, expected: impl for<'a> FnOnce(&mut TestContext<'a>) -> Result<Expr<'a>, AllocError>) {
+    fn test_expr(s: &str, expected: impl for<'a, 'p> FnOnce(&mut TestContext<'a, 'p>) -> Result<Expr<'a>, AllocError>) {
         let arena = Allocator::new(Bump::new());
-        let mut ctx = TestContext { arena: &arena, pool: ConstantPool::new(&arena) };
-        assert_eq!(
-            crate::parse(&arena, s, ParseMode::Expression).unwrap().as_expression().unwrap(),
+        let mut pool = ConstantPool::new(&arena);
+        let expected = {
+            let mut ctx = TestContext { arena: &arena, pool: &mut pool };
             expected(&mut ctx).unwrap()
-        );
+        };
+        let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool)
+            .unwrap_or_else(|e| panic!(
+                "Failed to parse: {}\n\tBacktrace:\n{}", e,
+                e.backtrace().unwrap_or(&Backtrace::disabled())
+            ))
+            .as_expression().unwrap();
+        assert_eq!(expected, actual);
     }
     const DUMMY: Span = Span::dummy();
     #[test]

@@ -13,18 +13,17 @@ pub mod parser;
 mod expr;
 
 
-pub struct PythonParser<'src, 'a> {
+pub struct PythonParser<'src, 'a, 'p> {
     pub arena: &'a Allocator,
     pub parser: Parser<'src, 'a>,
     expression_context: ExprContext,
-    pool: ConstantPool<'a>
+    pub pool: &'p mut ConstantPool<'a>
 }
-impl<'src, 'a> PythonParser<'src, 'a> {
-    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>) -> Self {
+impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
+    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>, pool: &'p mut ConstantPool<'a>) -> Self {
         PythonParser {
-            arena, parser,
+            arena, parser, pool,
             expression_context: Default::default(),
-            pool: ConstantPool::new(arena)
         }
     }
     #[inline]
@@ -41,7 +40,7 @@ impl<'src, 'a> PythonParser<'src, 'a> {
         self.convert_ident(span, raw)
     }
 }
-impl<'src, 'a> IParser<'src, 'a> for PythonParser<'src, 'a> {
+impl<'src, 'a, 'p> IParser<'src, 'a> for PythonParser<'src, 'a, 'p> {
     #[inline]
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a> {
         &mut self.parser
