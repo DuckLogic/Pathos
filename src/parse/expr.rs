@@ -480,3 +480,48 @@ impl CollectionType {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use crate::alloc::{Allocator, AllocError};
+    use bumpalo::Bump;
+    use pretty_assertions::assert_eq;
+    use crate::ast::tree::{Expr, ExprKind, Operator};
+    use crate::ParseMode;
+    use crate::ast::{Span, Constant};
+    use crate::ast::constants::ConstantPool;
+    use crate::{ident, expr};
+
+    struct TestContext<'a> {
+        arena: &'a Allocator,
+        pool: ConstantPool<'a>
+    }
+    impl<'a> TestContext<'a> {
+        fn int(&mut self, i: i64) -> Expr<'a> {
+            let val = self.pool.int(DUMMY, i).unwrap();
+            self.constant(val)
+        }
+        fn constant(&self, value: Constant<'a>) -> Expr<'a> {
+            self.arena.alloc(ExprKind::Constant {
+                span: DUMMY,
+                kind: None,
+                value
+            }).unwrap()
+        }
+    }
+    fn test_expr(s: &str, expected: impl for<'a> FnOnce(&mut TestContext<'a>) -> Result<Expr<'a>, AllocError>) {
+        let arena = Allocator::new(Bump::new());
+        let mut ctx = TestContext { arena: &arena, pool: ConstantPool::new(&arena) };
+        assert_eq!(
+            crate::parse(&arena, s, ParseMode::Expression).unwrap().as_expression().unwrap(),
+            expected(&mut ctx).unwrap()
+        );
+    }
+    const DUMMY: Span = Span::dummy();
+    #[test]
+    fn literals() {
+        test_expr("5", |ctx| Ok(ctx.int(5)));
+        test_expr("5 + 5", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: ctx.int(5), op: Operator::Add, right: ctx.int(5)
+        })))
+    }
+}

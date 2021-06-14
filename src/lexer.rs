@@ -112,10 +112,19 @@ use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 /// source file.
 #[derive(Copy, Clone)]
 pub struct Ident<'a> {
+    /*
+     * TODO: Store precomputed hashes or something?
+     * I feel like it might be helpful to have some sort of `IdentMap`.
+     * However right now, that's probably just premature optimization.
+     */
     text: &'a str,
-    /// A monotonically increasing id
-    /// for this identifier
-    id: u32
+}
+impl Ident<'static> {
+    /// Create an identifier from the specified static text
+    #[inline]
+    pub fn from_static_text(text: &'static str) -> Ident<'static> {
+        Ident { text }
+    }
 }
 impl<'a> Ident<'a> {
     #[inline]
@@ -257,9 +266,6 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
         Span { start: raw.start, end: raw.end }
     }
     pub fn create_ident(&mut self, text: &'src str) -> Result<&'arena Ident<'arena>, AllocError> {
-        use std::convert::TryFrom;
-        let old_len = u32::try_from(self.known_idents.len())
-            .expect("Too many ids");
         Ok(match self.known_idents.entry(text) {
             hashbrown::hash_map::Entry::Occupied(entry) => {
                 *entry.get()
@@ -267,10 +273,9 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
             hashbrown::hash_map::Entry::Vacant(entry) => {
                 let allocated_text = self.arena.alloc_str(text)?;
                 let allocated = self.arena.alloc(Ident {
-                    text: allocated_text, id: old_len
+                    text: allocated_text
                 })?;
                 entry.insert(allocated);
-                assert!(self.known_idents.len() > old_len as usize);
                 allocated
             }
         })
@@ -1325,11 +1330,12 @@ impl From<AllocError> for StringError {
 #[cfg(test)]
 mod test {
     use super::*;
+    use bumpalo::Bump;
     #[cfg(test)]
     use pretty_assertions::{assert_eq,};
     macro_rules! munch_token {
         ($lexer:expr, $res:expr; Ident($text:literal), $($remaining:tt)*) => {
-            $res.push(Token::Ident($lexer.create_ident($text)));
+            $res.push(Token::Ident($lexer.create_ident($text).unwrap()));
             munch_token!($lexer, $res; $($remaining)*)
         };
         ($lexer:expr, $res:expr; $name:ident, $($remaining:tt)*) => {
@@ -1348,7 +1354,7 @@ mod test {
     }
     macro_rules! test_lex {
         ($text:expr, $($om:tt)*) => {{
-            let arena = Bump::new();
+            let arena = Allocator::new(Bump::new());
             let mut lexer = PythonLexer::new(&arena, "");
             let mut res = Vec::new();
             munch_token!(lexer, res; $($om)*);

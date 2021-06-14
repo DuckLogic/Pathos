@@ -2,6 +2,8 @@ use std::ops::Deref;
 use std::fmt::{self, Formatter, Debug, Display};
 use std::hash::{Hash, Hasher};
 
+#[macro_use]
+mod macros;
 pub mod constants;
 pub mod tree;
 
@@ -13,6 +15,15 @@ pub use crate::alloc::Allocator;
 pub struct Span {
     pub start: usize,
     pub end: usize
+}
+impl Span {
+    /// Create a dummy span for debugging purposes
+    ///
+    /// NOTE: The resulting span is not distinguishable
+    /// from
+    pub const fn dummy() -> Span {
+        Span { start: 0, end: 0 }
+    }
 }
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {

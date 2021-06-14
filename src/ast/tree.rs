@@ -31,6 +31,15 @@ pub enum Mod<'a> {
         returns: Expr<'a>,
     },
 }
+impl<'a> Mod<'a> {
+    #[inline]
+    pub fn as_expression(&self) -> Option<Expr<'a>> {
+        match *self {
+            Mod::Expression { body } => Some(body),
+            _ => None
+        }
+    }
+}
 /// A reference to a statement
 pub type Stmt<'a> = &'a StmtKind<'a>;
 
