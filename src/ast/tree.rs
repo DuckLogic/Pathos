@@ -349,7 +349,6 @@ pub enum ExprKind<'a> {
         span: Span,
         op: Unaryop,
         operand: Expr<'a>,
-
     },
     Lambda {
         /// The span of the source
@@ -605,6 +604,10 @@ pub enum Operator {
     FloorDiv,
 }
 impl Operator {
+    #[inline]
+    pub fn is_right_associative(&self) -> bool {
+        matches!(*self, Operator::Pow)
+    }
     #[inline]
     pub fn from_token(tk: &Token) -> Option<Self> {
         Some(match *tk {

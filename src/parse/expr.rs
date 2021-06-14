@@ -1,3 +1,9 @@
+//! A pratt parser for Python expressions
+//!
+//! Primarily based upon [Bob Nystorm's excellent blog post](http://journal.stuffwithstuff.com/2011/03/19/pratt-parsers-expression-parsing-made-easy/)
+//!
+//! See also [this (C) pratt parser, implemented in crafting interpreters](http://craftinginterpreters.com/compiling-expressions.html#parsing-prefix-expressions)
+//! See also [this example code](https://github.com/munificent/bantam)
 use crate::ast::constants::FloatLiteral;
 use crate::lexer::{Token};
 use crate::ast::{Ident, Span, Spanned};
@@ -8,6 +14,7 @@ use super::{PythonParser};
 
 use crate::vec;
 use crate::alloc::{Allocator, AllocError, Vec};
+use std::ops::{Sub, Add};
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -38,6 +45,7 @@ struct InfixParser<'src, 'a, 'p> {
 /// lowest precedence (least binding power)
 /// to highest precedence (most binding power).
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
+#[repr(u8)]
 pub enum ExprPrec {
     /// Assignment expressions (name := val)
     Assignment,
@@ -97,18 +105,59 @@ pub enum ExprPrec {
     /// `{exprs...}`
     Atom,
 }
+impl ExprPrec {
+    const MIN_PREC: ExprPrec = ExprPrec::from_int(0).unwrap();
+    const fn from_int(val: u8) -> Option<Self> {
+        if (val as usize) < std::mem::variant_count::<ExprPrec>() {
+            Some(unsafe { std::mem::transmute::<u8, ExprPrec>(val) })
+        } else {
+            None
+        }
+    }
+}
+impl Sub<u8> for ExprPrec {
+    type Output = ExprPrec;
+
+    #[inline]
+    fn sub(self, rhs: u8) -> Self::Output {
+        (self as u8).checked_sub(rhs).and_then(ExprPrec::from_int)
+            .unwrap_or_else(|| panic!("Cannot subtract {:?} - {}", self, rhs))
+    }
+}
+impl Add<u8> for ExprPrec {
+    type Output = ExprPrec;
+
+    #[inline]
+    fn add(self, rhs: u8) -> Self::Output {
+        (self as u8).checked_add(rhs).and_then(ExprPrec::from_int)
+            .unwrap_or_else(|| panic!("Cannot add {:?} + {}", self, rhs))
+    }
+}
 
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
+    /// Parse an expression
+    ///
+    /// Parses anything regardless of precedence
     pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
-        self.parse_prec(ExprPrec::Atom)
+        self.parse_prec(ExprPrec::MIN_PREC)
     }
-    /// A pratt parser for python expressions
-    fn parse_prec(&mut self, prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
+    /// Parse an expression, accepting anything that has at least the specified precedence (or binding power)
+    ///
+    /// For example, say you are the `+` parser and you are parsing the input `3 + 5 * 6`
+    /// You would call parse_prec(+) with the `5 * 6` on your right.
+    /// Since '*' has a higher precedence (more binding power), it would be fully consumed
+    /// and you would get `3 + (5 * 6)`.
+    ///
+    /// On the other hand, say you were parsing the input `5 * 6 + 3`
+    /// You would call parse_prec(*) with the `6 + 3` on your right.
+    /// Since `+` has a lower precedence (less binding power) than the min_prec `+`,
+    /// it would **NOT** be consumed.
+    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
         let token = self.parser.peek_tk();
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
             (Some(tk), Some(parser)) => {
-                dbg!(self.parser.skip()?);
+                self.parser.skip()?;
                 (parser.func)(&mut *self, &tk)?
             },
             _ => {
@@ -122,7 +171,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             };
             match Self::infix_parser(&next_token.kind) {
                 Some(parser) => {
-                    if parser.prec >= prec {
+                    if parser.prec <= min_prec {
                         return Ok(left)
                     }
                     self.parser.skip()?;
@@ -167,6 +216,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 func: Self::dict_display,
                 prec: ExprPrec::Atom
             },
+            Token::BitwiseInvert | Token::Not |
+            Token::Plus | Token::Minus => PrefixParser {
+                func: Self::unary_op,
+                prec: ExprPrec::Unary
+            },
             _ => return None
         })
     }
@@ -191,13 +245,46 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Some(it) => it,
             _ => unreachable!(),
         };
-        let right = self.expression()?;
+        let mut min_prec = op.precedence();
+        if op.is_right_associative() {
+            /*
+             * See here:
+             * https://github.com/munificent/bantam/blob/master/src/com/stuffwithstuff/bantam/parselets/BinaryOperatorParselet.java#L20-L23
+             *
+             * If we are right associative (**), then we decrease the minimum precedence to allow
+             * a parser with the exact same precedence to appear on our right.
+             * For example, if we're at the first addition sign in "1+2+3", then we call parse_prec(ExprPrec::Add)
+             * we would normally refuse to recurse into parsing the (2+3) on the right hand size,
+             * because next_token.prec <= min_prec. This gives us (1+2), then we go on to parse the `3`,
+             * giving us a result ((1+2)+3) and the left associativity we desire.
+             * However, if we were to call parse_prec(ExprPrec::Add - 1),
+             * we **would** recurse into the (2+3) on the right side,
+             * giving us (1+(2+3)). For exponentiation `**`,
+             * we actually want this right associativity, so we do the subtraction here.
+             */
+            min_prec = min_prec - 1;
+        }
+        let right = self.parse_prec(min_prec)?;
         let span = Span {
             start: left.span().start,
             end: right.span().end
         };
         Ok(&*self.arena.alloc(ExprKind::BinOp {
             left, span, op, right
+        })?)
+    }
+    fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        let op = match Unaryop::from_token(&tk.kind) {
+            Some(op) => op,
+            None => unreachable!()
+        };
+        let right = self.parse_prec(op.precedence())?;
+        let span = Span {
+            start: tk.span.start,
+            end: right.span().end
+        };
+        Ok(&*self.arena.alloc(ExprKind::UnaryOp {
+            span, op, operand: right
         })?)
     }
     fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
@@ -487,13 +574,15 @@ mod test {
     use crate::alloc::{Allocator, AllocError};
     use bumpalo::Bump;
     use pretty_assertions::assert_eq;
-    use crate::ast::tree::{Expr, ExprKind, Operator};
+    use crate::ast::tree::{Expr, ExprKind, Operator, Unaryop};
     use crate::ParseMode;
     use crate::ast::{Span, Constant};
     use crate::ast::constants::ConstantPool;
     use crate::{ident, expr};
     use std::error::Error;
     use std::backtrace::Backtrace;
+    use crate::parse::ExprPrec;
+    use crate::ast::tree::ExprKind::UnaryOp;
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
@@ -512,6 +601,7 @@ mod test {
             }).unwrap()
         }
     }
+    #[track_caller]
     fn test_expr(s: &str, expected: impl for<'a, 'p> FnOnce(&mut TestContext<'a, 'p>) -> Result<Expr<'a>, AllocError>) {
         let arena = Allocator::new(Bump::new());
         let mut pool = ConstantPool::new(&arena);
@@ -533,6 +623,79 @@ mod test {
         test_expr("5", |ctx| Ok(ctx.int(5)));
         test_expr("5 + 5", |ctx| Ok(expr!(ctx, Expr::BinOp {
             span: DUMMY, left: ctx.int(5), op: Operator::Add, right: ctx.int(5)
+        })))
+    }
+    #[test]
+    fn arith_prec() {
+        assert!(ExprPrec::Term < ExprPrec::Factor); // + has less binding power than '*'
+        test_expr("5 + 3 * 6", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: ctx.int(5), op: Operator::Add, right: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.int(3), op: Operator::Mult, right: ctx.int(6)
+            })
+        })));
+        test_expr("3 * 6 + 5", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.int(3), op: Operator::Mult, right: ctx.int(6)
+            }),
+            op: Operator::Add, right: ctx.int(5)
+        })));
+        // NOTE: This parses as -(1 ** 3)
+        test_expr("-1**3", |ctx| Ok(expr!(ctx, Expr :: UnaryOp {
+            span: DUMMY, op: Unaryop::USub, operand: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.int(1), op: Operator::Pow, right: ctx.int(3)
+            })
+        })));
+    }
+    #[test]
+    fn test_arith_associativity() {
+        /*
+         * Quick lesson on associativity:
+         * Normal arithmetic obeys the "associative property" (from Algebra 1)
+         * so that (1 + (2 + 3)) == (1 + (2 + 3)). It doesn't matter how you group
+         * or order your addition, the result is the same.
+         * However, because of operator overloading, this may not be the case in Python.
+         * Almost all python operators are parsed using whats called "left associativity",
+         * so that (in the absence of explicit grouping) "1 + 2 + 3 + 4"
+         * parses as "(((1 + 2) + 3) + 4)".
+         * The alternative is what is called "right associativity". That would parse the
+         * same expression as "(1 + (2 + (3 + 4)))".
+         * In Python, the only place this "right associativity" is used is the power operator (**).
+         * "1**2**3" parses as "(1**(2**3))". Everything else parses with left
+         * associativity.
+         */
+        // Should parse as ((1+2)+3) <left associative>
+        test_expr("1+2+3", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.int(1), op: Operator::Add, right: ctx.int(2)
+            }),
+            op: Operator::Add, right: ctx.int(3)
+        })));
+        /*
+         * Should parse as (((1*2)*3)/4) <left associative>
+         * NOTE: Multiplication and division *should* have the same precedence
+         */
+        test_expr("1*2*3/4", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: expr!(ctx, Expr::BinOp {
+                span: DUMMY,
+                left: expr!(ctx, Expr::BinOp {
+                    span: DUMMY, left: ctx.int(1),
+                    op: Operator::Mult, right: ctx.int(2)
+                }),
+                op: Operator::Mult,
+                right: ctx.int(3)
+            }),
+            op: Operator::Div, right: ctx.int(4)
+        })));
+
+        /*
+         * Exponentiation is the only exception to the left associativity.
+         * This parse as (1**(2**3)) <right associative>
+         */
+        test_expr("1**2**3", |ctx| Ok(expr!(ctx, Expr::BinOp {
+            span: DUMMY, left: ctx.int(1),
+            op: Operator::Pow, right: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.int(2), op: Operator::Pow, right: ctx.int(3)
+            })
         })))
     }
 }

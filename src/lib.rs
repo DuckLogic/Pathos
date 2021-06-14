@@ -1,5 +1,7 @@
 #![feature(
-    backtrace, // Better errors ;)
+    backtrace, // Better errors ;)\
+    variant_count, // Used to convert int -> enum
+    const_fn_transmute, const_option, // Used for const ExprPrec::from_int().unwrap()
 )]
 use alloc::Allocator;
 use ast::constants::ConstantPool;
