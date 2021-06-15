@@ -1,9 +1,5 @@
 //! A set of macros to build an AST
-#[macro_export]
-macro_rules! ident {
-    ($ctx:expr, $span:expr, $raw:expr) => ($ctx.arena.alloc(Ident::from_raw($span, $raw)?)?);
-    ($ctx:expr, $span:expr, $raw:literal) => ($ctx.arena.alloc(Ident::from_raw($span, RawIdent::from_static_str($raw))?)?)
-}
+
 /// Create an [Expr](crate::ast::tree::Expr)
 #[macro_export]
 macro_rules! expr {

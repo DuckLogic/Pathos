@@ -33,12 +33,19 @@ pub fn parse<'a, 'src>(
     pool: &mut ConstantPool<'a>,
     symbol_table: &mut SymbolTable<'a>
 ) -> Result<ast::tree::Mod<'a>, ParseError> {
-    let lexer = PythonLexer::new(arena, symbol_table, text);
+    let lexer = PythonLexer::new(
+        arena,
+        std::mem::replace(symbol_table, SymbolTable::new(arena)), // take it from them
+        text
+    );
     let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool, );
-    match mode {
+    let res = match mode {
         ParseMode::Expression => {
             let res = parser.expression()?;
-            Ok(ast::tree::Mod::Expression { body: res })
+            ast::tree::Mod::Expression { body: res }
         }
-    }
+    };
+    // give back the symbol table we took
+    *symbol_table = parser.parser.into_lexer().into_symbol_table();
+    Ok(res)
 }

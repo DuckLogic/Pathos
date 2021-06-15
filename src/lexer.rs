@@ -204,15 +204,15 @@ impl From<StringError> for LexError {
     }
 }
 
-pub struct PythonLexer<'src, 'arena, 'sym> {
+pub struct PythonLexer<'src, 'arena> {
     arena: &'arena Allocator,
     raw_lexer: Lexer<'src, RawToken<'src>>,
-    symbol_table: &'sym mut SymbolTable<'arena>,
+    symbol_table: SymbolTable<'arena>,
     pending_indentation_change: isize,
     indent_stack: Vec<usize>,
     starting_line: bool,
 }
-impl<'src, 'arena, 'sym> Debug for PythonLexer<'src, 'arena, 'sym> {
+impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let span = self.current_span();
         let slice = self.raw_lexer.slice();
@@ -236,8 +236,8 @@ macro_rules! translate_tokens {
     (handler for $name:ident $(( $mtch:ident ) )? => $handler:expr) => ($handler);
     (handler for $name:ident) => (Token::$name);
 }
-impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena, 'sym> {
-    pub fn new(arena: &'arena Allocator, symbol_table: &'sym mut SymbolTable<'arena>, text: &'src str) -> Self {
+impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
+    pub fn new(arena: &'arena Allocator, symbol_table: SymbolTable<'arena>, text: &'src str) -> Self {
         PythonLexer {
             arena,
             raw_lexer: RawToken::lexer(text),
@@ -508,6 +508,10 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena, 'sym> {
             }
         }
         Err(StringError::MissingEnd)
+    }
+    #[inline]
+    pub fn into_symbol_table(self) -> SymbolTable<'arena> {
+        self.symbol_table
     }
 }
 
@@ -1352,7 +1356,7 @@ mod test {
         ($text:expr, $($om:tt)*) => {{
             let arena = Allocator::new(Bump::new());
             let symbol_table = SymbolTable::new(&arena);
-            let mut lexer = PythonLexer::new(&arena, &mut symbol_table, "");
+            let mut lexer = PythonLexer::new(&arena, symbol_table, "");
             let mut res = Vec::new();
             munch_token!(lexer, res; $($om)*);
             assert_eq!(

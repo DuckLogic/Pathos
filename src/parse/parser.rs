@@ -176,13 +176,13 @@ impl Default for SeperatorParseState {
         SeperatorParseState::AwaitingStart
     }
 }
-pub trait EndFunc<'src, 'a, 'sym> {
-    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool;
+pub trait EndFunc<'src, 'a> {
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
     fn description(&self) -> &'static str;
 }
-impl<'src, 'a, 'sym> EndFunc<'src, 'a, 'sym> for Token<'a> {
+impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
         match parser.peek() {
             Some(tk) => tk == *self,
             None => false
@@ -193,10 +193,10 @@ impl<'src, 'a, 'sym> EndFunc<'src, 'a, 'sym> for Token<'a> {
         self.static_text().unwrap_or("ending")
     }
 }
-impl<'src, 'a, 'sym, Func> EndFunc<'src, 'a, 'sym> for Func
-    where Func: FnMut(&Parser<'src, 'a, 'sym>) -> bool {
+impl<'src, 'a, Func> EndFunc<'src, 'a> for Func
+    where Func: FnMut(&Parser<'src, 'a>) -> bool {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
         (*self)(parser)
     }
     #[inline]
@@ -204,16 +204,16 @@ impl<'src, 'a, 'sym, Func> EndFunc<'src, 'a, 'sym> for Func
         "ending"
     }
 }
-pub trait IParser<'src, 'a, 'sym>: Sized + Debug {
-    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a, 'sym>;
-    fn as_parser(&self) -> &Parser<'src, 'a, 'sym>;
+pub trait IParser<'src, 'a>: Sized + Debug {
+    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
+    fn as_parser(&self) -> &Parser<'src, 'a>;
     #[inline]
     fn parse_terminated<'p, T, F>(
         &'p mut self,
         sep: Token<'a>,
         ending: Token<'a>,
         parse_func: F
-    ) -> ParseSeperated<'p, 'src, 'a, 'sym, Self, F, Token<'a>, T>
+    ) -> ParseSeperated<'p, 'src, 'a, Self, F, Token<'a>, T>
         where F: FnMut(&mut Self) -> Result<T, ParseError> {
         ParseSeperated::new(
             self, parse_func,
@@ -226,8 +226,8 @@ pub trait IParser<'src, 'a, 'sym>: Sized + Debug {
 }
 #[derive(Debug)]
 pub struct ParseSeperated<
-    'p, 'src: 'p, 'a: 'p, 'sym: 'p,
-    P: IParser<'src, 'a, 'sym>,
+    'p, 'src: 'p, 'a: 'p,
+    P: IParser<'src, 'a>,
     ParseFunc, E, T
 > {
     pub parser: &'p mut P,
@@ -241,13 +241,13 @@ pub struct ParseSeperated<
     /// For example: `(a, b, c,)` has a redundant comma
     /// terminating the tuple.
     pub allow_terminator: bool,
-    pub marker: PhantomData<fn(&'src (), &'sym ()) -> T>,
+    pub marker: PhantomData<fn(&'src ()) -> T>,
 }
-impl<'p, 'src, 'a, 'sym,
-    P: IParser<'src, 'a, 'sym>,
+impl<'p, 'src, 'a,
+    P: IParser<'src, 'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a, 'sym>, T
-> ParseSeperated<'p, 'src, 'a, 'sym, P, ParseFunc, E, T> {
+    E: EndFunc<'src, 'a>, T
+> ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     #[inline]
     fn new(
         parser: &'p mut P,
@@ -271,7 +271,7 @@ impl<'p, 'src, 'a, 'sym,
     /// A good message in this case would be:
     /// "Expected either ',' or ']'"
     #[cold]
-    fn unexpected_seperator(&self) -> ParseError {
+    fn unexpected_separator(&self) -> ParseError {
         self.parser.as_parser().unexpected(
             &format_args!(
                 "Expected {:?} or {}",
@@ -291,11 +291,11 @@ impl<'p, 'src, 'a, 'sym,
     }
 }
 
-impl<'p, 'src, 'a, 'sym,
-    P: IParser<'src, 'a, 'sym>,
+impl<'p, 'src, 'a: 'p,
+    P: IParser<'src, 'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a, 'sym>, T
-> Iterator for ParseSeperated<'p, 'src, 'a, 'sym, P, ParseFunc, E, T> {
+    E: EndFunc<'src, 'a>, T
+> Iterator for ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     type Item = Result<T, ParseError>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -354,7 +354,7 @@ impl<'p, 'src, 'a, 'sym,
                             // EOF -> fallthrough to error
                         }
                     };
-                    return Some(Err(self.unexpected_seperator()))
+                    return Some(Err(self.unexpected_separator()))
                 },
                 SeperatorParseState::Finished => {
                     return None
@@ -375,7 +375,7 @@ impl<'p, 'src, 'a, 'sym,
 
 #[derive(educe::Educe)]
 #[educe(Debug)]
-pub struct Parser<'src, 'a, 'sym> {
+pub struct Parser<'src, 'a> {
     #[educe(Debug(ignore))]
     arena: &'a Allocator,
     /// The buffer of look-ahead, containing
@@ -393,10 +393,10 @@ pub struct Parser<'src, 'a, 'sym> {
     ///
     /// To consume the first token, use [VecDeque::pop_back].
     buffer: VecDeque<SpannedToken<'a>>,
-    lexer: PythonLexer<'src, 'a, 'sym>,
+    lexer: PythonLexer<'src, 'a>,
 }
-impl<'src, 'a, 'sym> Parser<'src, 'a, 'sym> {
-    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a, 'sym>) -> Result<Self, ParseError> {
+impl<'src, 'a> Parser<'src, 'a> {
+    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
         let mut res = Parser {
             lexer, buffer: VecDeque::with_capacity(1), arena
         };
@@ -597,5 +597,9 @@ impl<'src, 'a, 'sym> Parser<'src, 'a, 'sym> {
                 None => "EOF".to_string()
             })
             .build()
+    }
+    #[inline]
+    pub fn into_lexer(self) -> PythonLexer<'src, 'a> {
+        self.lexer
     }
 }

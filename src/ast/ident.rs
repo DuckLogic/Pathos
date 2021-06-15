@@ -47,7 +47,7 @@ impl PartialEq<str> for Ident<'_> {
 impl Hash for Ident<'_> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.symbol.hash_code(state)
+        self.symbol.hash(state)
     }
 }
 impl<'a> Spanned for Ident<'a> {
@@ -58,7 +58,7 @@ impl<'a> Spanned for Ident<'a> {
 }
 impl Debug for Ident<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{} @ {}", self.name, self.span)
+        write!(f, "{} @ {}", self.text(), self.span)
     }
 }
 impl Display for Ident<'_> {
@@ -140,13 +140,13 @@ impl<'a> PartialEq<str> for Symbol<'a> {
 impl<'a> PartialEq<Ident<'a>> for Symbol<'a> {
     #[inline]
     fn eq(&self, other: &Ident<'a>) -> bool {
-        self == other.symbol
+        *self == other.symbol
     }
 }
 impl<'a> PartialEq<Symbol<'a>> for Ident<'a> {
     #[inline]
     fn eq(&self, other: &Symbol<'a>) -> bool {
-        self.symbol == other
+        self.symbol == *other
     }
 }
 impl<'a> Eq for Symbol<'a> {}
@@ -165,13 +165,13 @@ impl<'a> PartialEq for Symbol<'a> {
 }
 /// A set of interned symbols, used to ensure that [Symbol]s are unique
 pub struct SymbolTable<'a> {
-    alloc: &'a Allocator,
+    arena: &'a Allocator,
     map: SymbolMap<'a, ()>
 }
 impl<'a> SymbolTable<'a> {
     #[inline]
     pub fn new(alloc: &'a Allocator) -> Self {
-        SymbolTable { alloc, map: SymbolMap::new() }
+        SymbolTable { arena: alloc, map: SymbolMap::new() }
     }
     /// Allocate a symbol with the specified text,
     /// reusing any existing memory if possible.
@@ -180,22 +180,19 @@ impl<'a> SymbolTable<'a> {
     #[inline]
     pub fn alloc(&mut self, s: &str) -> Result<Symbol<'a>, AllocError> {
         use hashbrown::hash_map::RawEntryMut;
-        match self.map.entry(s) {
+        let hash = s.hash_code(self.map.0.hasher());
+        match self.map.0.raw_entry_mut()
+            .from_hash(hash, |other_key| *other_key == *s) {
             RawEntryMut::Occupied(entry) => Ok(*entry.into_key()),
             RawEntryMut::Vacant(entry) => {
-                let sym = self._actually_alloc()?;
-                entry.insert_hashed_nocheck(sym.0.hash, sym, ());
+                let text = self.arena.alloc_str(s)?;
+                let sym = Symbol(&*self.arena.alloc(SymbolInner {
+                    text, hash
+                })?);
+                entry.insert_hashed_nocheck(hash, sym, ());
                 Ok(sym)
             }
         }
-    }
-    #[cold]
-    #[inline(never)]
-    fn _actually_alloc(&self, s: &str) -> Result<Symbol<'a>, AllocError> {
-        let text = self.alloc.alloc_str(s)?;
-        Ok(self.alloc.alloc(Symbol {
-
-        }))
     }
 }
 
@@ -223,13 +220,13 @@ impl<'a, V> SymbolMap<'a, V> {
         self.0.get::<str>(&key.as_ref())
     }
     #[inline]
-    pub fn entry<'m, K: SymbolKey<'a>>(&mut self, key: K) -> ::hashbrown::hash_map::RawEntryMut<'m, Symbol<'a>, V, ::hashbrown::hash_map::DefaultHashBuilder> {
+    pub fn entry<'m, K: SymbolKey<'a>>(&'m mut self, key: K) -> ::hashbrown::hash_map::RawEntryMut<'m, Symbol<'a>, V, ::hashbrown::hash_map::DefaultHashBuilder> {
         let hash = key.hash_code(self.0.hasher());
         self.0.raw_entry_mut()
-            .from_hash(hash, |other_key| other_key.eq(&key))
+            .from_hash(hash, |other_key| key.matches_symbol(*other_key))
     }
     #[inline]
-    pub fn as_raw_map(&self) -> &'_ ::hashbrown::HashMap<&'a Symbol<'a>, V> {
+    pub fn as_raw_map(&self) -> &'_ ::hashbrown::HashMap<Symbol<'a>, V> {
         &self.0
     }
 }
@@ -252,12 +249,13 @@ impl<'a, 'b> SymbolKey<'a> for &'b str {
     #[inline]
     fn hash_code<H: BuildHasher>(&self, hasher: &H) -> u64 {
         let mut state = hasher.build_hasher();
-        self.as_ref().hash(&mut state);
+        let s: &str = self.as_ref();
+        s.hash(&mut state);
         state.finish()
     }
     #[inline]
     fn matches_symbol(&self, s: Symbol<'a>) -> bool {
-        s.text() == self
+        *self == s.text()
     }
 }
 impl<'a> SymbolKey<'a> for Ident<'a> {

@@ -1,6 +1,4 @@
-use std::ops::Deref;
 use std::fmt::{self, Formatter, Debug, Display};
-use std::hash::{Hash, Hasher};
 
 #[macro_use]
 mod macros;
@@ -9,7 +7,6 @@ pub mod tree;
 pub mod ident;
 
 pub use self::constants::{Constant};
-use crate::alloc::AllocError;
 pub use crate::alloc::Allocator;
 pub use self::ident::Ident;
 

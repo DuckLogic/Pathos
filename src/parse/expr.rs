@@ -22,8 +22,6 @@ struct PrefixParser<'src, 'a, 'p> {
         parser: &mut PythonParser<'src, 'a, 'p>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
-    // TODO: Is this needed?
-    prec: ExprPrec
 }
 struct InfixParser<'src, 'a, 'p> {
     func: fn(
@@ -187,19 +185,13 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
     }
     fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p>> {
-        Some(match *token {
-            Token::Ident(_) => PrefixParser {
-                func: Self::name,
-                prec: ExprPrec::Atom
-            },
+        let func = match *token {
+            Token::Ident(_) => Self::name,
             Token::True | Token::False |
             Token::None | Token::StringLiteral(_) |
             Token::IntegerLiteral(_) |
             Token::BigIntegerLiteral(_) |
-            Token::FloatLiteral(_) => PrefixParser {
-                func: Self::constant,
-                prec: ExprPrec::Atom
-            },
+            Token::FloatLiteral(_) => Self::constant,
             /*
              * For constructing a list, a set or a dictionary
              * Python provides special syntax called “displays”,
@@ -208,26 +200,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              * - they are computed via a set of looping and filtering
              *   instructions, called a comprehension.
              */
-            Token::OpenBracket => PrefixParser {
-                func: Self::list_display,
-                prec: ExprPrec::Atom
-            },
-
-            Token::OpenParen => PrefixParser {
-                func: Self::parentheses,
-                prec: ExprPrec::Atom
-            },
-            Token::OpenBrace => PrefixParser {
-                func: Self::dict_display,
-                prec: ExprPrec::Atom
-            },
+            Token::OpenBracket => Self::list_display,
+            Token::OpenParen => Self::parentheses,
+            Token::OpenBrace => Self::dict_display,
             Token::BitwiseInvert | Token::Not |
-            Token::Plus | Token::Minus => PrefixParser {
-                func: Self::unary_op,
-                prec: ExprPrec::Unary
-            },
+            Token::Plus | Token::Minus => Self::unary_op,
             _ => return None
-        })
+        };
+        Some(PrefixParser { func })
     }
     fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p>> {
         Some(match *token {
@@ -293,11 +273,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         })?)
     }
     fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
-        let ident = match **tk {
+        let symbol = match **tk {
             Token::Ident(inner) => inner, 
             _ => unreachable!()
         };
-        let ident = *self.arena.alloc(Ident::from_raw(tk.span, ident)?)?;
+        let ident = Ident { symbol, span: tk.span };
         Ok(&*self.arena.alloc(ExprKind::Name {
             span: tk.span, id: ident,
             ctx: self.expression_context
@@ -678,19 +658,17 @@ mod test {
     use crate::ParseMode;
     use crate::ast::{Span, Ident, Constant};
     use crate::ast::constants::ConstantPool;
-    use crate::{ident, expr};
-    use crate::{vec, count_exprs};
+    use crate::{expr};
+    use crate::{vec};
     use std::error::Error;
     use std::backtrace::Backtrace;
     use crate::parse::ExprPrec;
-    use crate::ast::tree::ExprKind::UnaryOp;
-    use hashbrown::HashMap;
     use crate::ast::ident::SymbolTable;
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
         pool: &'p mut ConstantPool<'a>,
-        symbol_table: &'p SymbolTable<'a>
+        symbol_table: &'p mut SymbolTable<'a>
     }
     impl<'a, 'p> TestContext<'a, 'p> {
         fn int(&mut self, i: i64) -> Expr<'a> {
@@ -698,11 +676,16 @@ mod test {
             self.constant(val)
         }
         fn ident(&mut self, s: &'static str) -> Ident<'a> {
-            let arena = self.arena;
             Ident {
                 symbol: self.symbol_table.alloc(s).unwrap(),
                 span: DUMMY
             }
+        }
+        fn name(&mut self, s: &'static str) -> Expr<'a> {
+            self.arena.alloc(ExprKind::Name {
+                span: DUMMY, id: self.ident(s),
+                ctx: ExprContext::Load
+            }).unwrap()
         }
         fn constant(&self, value: Constant<'a>) -> Expr<'a> {
             self.arena.alloc(ExprKind::Constant {
@@ -716,11 +699,12 @@ mod test {
     fn test_expr(s: &str, expected: impl for<'a, 'p> FnOnce(&mut TestContext<'a, 'p>) -> Result<Expr<'a>, AllocError>) {
         let arena = Allocator::new(Bump::new());
         let mut pool = ConstantPool::new(&arena);
+        let mut symbol_table = SymbolTable::new(&arena);
         let expected = {
-            let mut ctx = TestContext { arena: &arena, pool: &mut pool, ident_pool: Default::default() };
+            let mut ctx = TestContext { arena: &arena, pool: &mut pool, symbol_table: &mut symbol_table };
             expected(&mut ctx).unwrap()
         };
-        let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool)
+        let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool, &mut symbol_table)
             .unwrap_or_else(|e| panic!(
                 "Failed to parse: {}\n\tBacktrace:\n{}", e,
                 e.backtrace().unwrap_or(&Backtrace::disabled())
@@ -825,6 +809,10 @@ mod test {
         })));
         test_expr("[1, 2, 4,]", |ctx| Ok(expr!(ctx, Expr::List {
             span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(4)]?.into_slice(),
+            ctx: ExprContext::Load
+        })));
+        test_expr("(1, foo)", |ctx| Ok(expr!(ctx, Expr::Tuple {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo")]?.into_slice(),
             ctx: ExprContext::Load
         })));
     }
