@@ -4,7 +4,7 @@
 #[macro_export]
 macro_rules! expr {
     ($ctx:expr, Expr :: $variant:ident { span: $span:expr, $($field_name:ident : $field_value:expr),+ }) => (
-        $ctx.arena.alloc(ExprKind::$variant { span: $span, $($field_name: $field_value),* })?
+        &*$ctx.arena.alloc(ExprKind::$variant { span: $span, $($field_name: $field_value),* })?
     );
 }
 /// Create a [Stmt](crate::ast::tree::Stmt)

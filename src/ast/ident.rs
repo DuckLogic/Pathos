@@ -8,6 +8,7 @@ use std::ops::Deref;
 use crate::alloc::{Allocator, AllocError};
 use std::borrow::Borrow;
 use hashbrown::HashMap;
+use hashbrown::hash_map::RawVacantEntryMut;
 
 /// An identifier, with a specific source location.
 ///
@@ -181,18 +182,27 @@ impl<'a> SymbolTable<'a> {
     pub fn alloc(&mut self, s: &str) -> Result<Symbol<'a>, AllocError> {
         use hashbrown::hash_map::RawEntryMut;
         let hash = s.hash_code(self.map.0.hasher());
-        match self.map.0.raw_entry_mut()
-            .from_hash(hash, |other_key| *other_key == *s) {
-            RawEntryMut::Occupied(entry) => Ok(*entry.into_key()),
+        match self.map.0.raw_entry_mut().from_hash(hash, |other_key| *other_key == *s) {
+            RawEntryMut::Occupied(entry) => {
+                Ok(*entry.into_key())
+            },
             RawEntryMut::Vacant(entry) => {
-                let text = self.arena.alloc_str(s)?;
-                let sym = Symbol(&*self.arena.alloc(SymbolInner {
-                    text, hash
-                })?);
-                entry.insert_hashed_nocheck(hash, sym, ());
-                Ok(sym)
+                Self::alloc_fallback(self.arena, entry, s, hash)
             }
         }
+    }
+    #[cold]
+    fn alloc_fallback(
+        arena: &'a Allocator,
+        entry: RawVacantEntryMut<'_, Symbol<'a>, (), ::hashbrown::hash_map::DefaultHashBuilder>,
+        s: &str, hash: u64
+    ) -> Result<Symbol<'a>, AllocError> {
+        let text = arena.alloc_str(s)?;
+        let sym = Symbol(&*arena.alloc(SymbolInner {
+            text, hash
+        })?);
+        entry.insert_with_hasher(hash, sym, (), |h| h.0.hash);
+        Ok(sym)
     }
 }
 

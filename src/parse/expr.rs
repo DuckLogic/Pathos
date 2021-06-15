@@ -654,7 +654,7 @@ mod test {
     use crate::alloc::{Allocator, AllocError};
     use bumpalo::Bump;
     use pretty_assertions::assert_eq;
-    use crate::ast::tree::{Expr, ExprContext, ExprKind, Operator, Unaryop};
+    use crate::ast::tree::*;
     use crate::ParseMode;
     use crate::ast::{Span, Ident, Constant};
     use crate::ast::constants::ConstantPool;
@@ -814,6 +814,45 @@ mod test {
         test_expr("(1, foo)", |ctx| Ok(expr!(ctx, Expr::Tuple {
             span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo")]?.into_slice(),
             ctx: ExprContext::Load
+        })));
+        test_expr("(1, foo, toad,)", |ctx| Ok(expr!(ctx, Expr::Tuple {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo"), ctx.name("toad")]?.into_slice(),
+            ctx: ExprContext::Load
+        })));
+        test_expr("[e for e in l]", |ctx| Ok(expr!(ctx, Expr::ListComp {
+            span: DUMMY, elt: ctx.name("e"), generators: vec![in ctx.arena; Comprehension {
+                target: ctx.name("e"), iter: ctx.name("l"), ifs: &[], is_async: false
+            }]?.into_slice()
+        })));
+        test_expr("[e1 * e2 for e1 in l1 for e2 in l2]", |ctx| Ok(expr!(ctx, Expr::ListComp {
+            span: DUMMY, elt: expr!(ctx, Expr::BinOp {
+                span: DUMMY, left: ctx.name("e1"),
+                op: Operator::Mult,
+                right: ctx.name("e2")
+            }), generators: vec![in ctx.arena; Comprehension {
+                target: ctx.name("e1"), iter: ctx.name("l1"), ifs: &[], is_async: false
+            }, Comprehension {
+                target: ctx.name("e2"), iter: ctx.name("l2"), ifs: &[], is_async: false
+            }]?.into_slice()
+        })));
+        test_expr("[e async for e in l if e + 3]", |ctx| Ok(expr!(ctx, Expr::ListComp {
+            span: DUMMY, elt: ctx.name("e"),
+            generators: vec![in ctx.arena; Comprehension {
+                target: ctx.name("e"), iter: ctx.name("l"),
+                ifs: vec![in ctx.arena; expr!(ctx, Expr::BinOp {
+                    span: DUMMY, left: ctx.name("e"),
+                    op: Operator::Add,
+                    right: ctx.int(3)
+                })]?.into_slice(),
+                is_async: true
+            }]?.into_slice()
+        })));
+        test_expr("(i for i in gen)", |ctx| Ok(expr!(ctx, Expr::GeneratorExp {
+            span: DUMMY, elt: ctx.name("i"),
+            generators: vec![in ctx.arena; Comprehension {
+                target: ctx.name("i"), iter: ctx.name("gen"),
+                ifs: &[], is_async: false
+            }]?.into_slice()
         })));
     }
 }
