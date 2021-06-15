@@ -8,18 +8,16 @@ use crate::ast::Span;
 use crate::lexer::StringError;
 
 #[derive(Debug, Clone)]
-pub enum ParseErrorKind<VE: ParseVisitError = !> {
+pub enum ParseErrorKind {
     InvalidToken,
     AllocationFailed,
     UnexpectedEof,
     UnexpectedToken,
     InvalidString(StringError),
-    /// An error that occurred while visiting
-    VisitError(VE::ExtraVariant)
 }
 
 #[derive(Debug)]
-struct ParseErrorInner<VE: ParseVisitError> {
+struct ParseErrorInner {
     /// The span of the source location
     ///
     /// There are only two instances where this can be `None`:
@@ -28,46 +26,32 @@ struct ParseErrorInner<VE: ParseVisitError> {
     span: Option<Span>,
     expected: Option<String>,
     actual: Option<String>,
-    kind: ParseErrorKind<VE>,
+    kind: ParseErrorKind,
     backtrace: Backtrace
 }
 
-/// A marker trait, indicating an error caused by a [ParseVisitor](std::parse::visitor::ParseVisitor)
-///
-/// These are distinct from normal [ParseError]s, because they are caused by user code
-/// and not an actual syntax error.
-///
-/// Technically, this is a conversion trait. It
-pub trait ParseVisitError: std::error::Error {
-    /// The extra variant added to [ParseErrorKind]
-    ///
-    /// Generally, this is Self, but sometimes ParseError
-    /// without needing to "add an extra variant".
-    ///
-    /// For example `impl ParseVisitError for AllocError`
-    /// has `ExtraVariant = !`, because ParseErrorKind already
-    /// has a variant indicating out of memory (so there is no need for another one).
-    type ExtraVariant: Error;
-    /// Convert this visit error into the appropriate parse error
-    fn into_parse_error(self) -> ParseError<Self>;
-}
-impl ParseVisitError for AllocError {
-    type ExtraVariant = !;
+#[derive(Debug)]
+pub struct ParseError(Box<ParseErrorInner>);
+impl ParseError {
+    /// Give additional context on the type of item that was "expected"
+    #[cold]
+    pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
+        self.0.expected = Some(msg.to_string());
+        self
+    }
     #[inline]
-    #[track_caller]
-    fn into_parse_error(self) -> ParseError<Self> {
-        ParseError::from_failed_alloc(self)
+    pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
+        ParseErrorBuilder(ParseErrorInner {
+            span: Some(span), kind,
+            expected: None, actual: None,
+            backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
+        })
     }
 }
-
-#[derive(Debug)]
-pub struct ParseError<VE: ParseVisitError = !>(Box<ParseErrorInner<VE>>);
-
-impl<VE: ParseVisitError> ParseError<VE> {
-    /// Create a parse error indicating an out of memory condition
+impl From<AllocError> for ParseError {
     #[cold]
     #[track_caller]
-    pub fn from_failed_alloc(_cause: AllocError) -> Self {
+    fn from(_cause: AllocError) -> Self {
         /*
          * TODO: Handle this without allocating.
          * Its bad to allocate memory for the error value
@@ -83,31 +67,9 @@ impl<VE: ParseVisitError> ParseError<VE> {
             backtrace: Backtrace::capture()
         }))
     }
-    /// Give additional context on the type of item that was "expected"
-    #[cold]
-    pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
-        self.0.expected = Some(msg.to_string());
-        self
-    }
-    #[inline]
-    pub fn builder(span: Span, kind: ParseErrorKind<VE>) -> ParseErrorBuilder<VE> {
-        ParseErrorBuilder(ParseErrorInner {
-            span: Some(span), kind,
-            expected: None, actual: None,
-            backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
-        })
-    }
-}
-impl<VE: ParseVisitError> From<VE> for ParseError<VE> {
-    #[inline]
-    #[cold]
-    #[track_caller]
-    fn from(cause: VE) -> Self {
-        cause.into_parse_error()
-    }
 }
 
-impl<VE: ParseVisitError> Display for ParseError<VE> {
+impl Display for ParseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0.kind {
             ParseErrorKind::InvalidToken => {
@@ -125,10 +87,6 @@ impl<VE: ParseVisitError> Display for ParseError<VE> {
             ParseErrorKind::InvalidString(ref cause) => {
                 write!(f, "Invalid string ({})", cause)?;
             },
-            ParseErrorKind::VisitError(ref extra) => {
-                write!(f, "{}", extra)?;
-                return Ok(()); // We don't write anything else. The user has complete control
-            }
         }
         match (&self.0.expected, &self.0.actual) {
             (Some(ref expected), Some(ref actual)) => {
@@ -149,7 +107,7 @@ impl<VE: ParseVisitError> Display for ParseError<VE> {
     }
 }
 
-impl<VE: ParseVisitError> std::error::Error for ParseError<VE> {
+impl std::error::Error for ParseError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self.0.kind {
             ParseErrorKind::InvalidString(ref cause) => Some(cause),
@@ -164,9 +122,9 @@ impl<VE: ParseVisitError> std::error::Error for ParseError<VE> {
 
 }
 
-pub struct ParseErrorBuilder<VE: ParseVisitError = !>(ParseErrorInner<VE>);
+pub struct ParseErrorBuilder(ParseErrorInner);
 
-impl<VE: ParseVisitError> ParseErrorBuilder<VE> {
+impl ParseErrorBuilder {
     #[inline]
     pub fn expected(mut self, f: impl ToString) -> Self {
         self.0.expected = Some(f.to_string());
@@ -178,7 +136,7 @@ impl<VE: ParseVisitError> ParseErrorBuilder<VE> {
         self
     }
     #[inline]
-    pub fn build(mut self) -> ParseError<VE> {
+    pub fn build(mut self) -> ParseError {
         ParseError(Box::new(ParseErrorInner {
             span: self.0.span,
             kind: self.0.kind,

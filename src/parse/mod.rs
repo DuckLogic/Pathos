@@ -5,29 +5,26 @@ use crate::ast::constants::ConstantPool;
 use crate::ast::ident::Ident;
 use crate::ast::tree::ExprContext;
 use crate::lexer::Token;
-use crate::parse::visitor::ParseVisitor;
 
 pub use self::expr::ExprPrec;
 use self::parser::{IParser, Parser};
 
 pub mod errors;
-pub mod visitor;
 pub mod parser;
 mod expr;
 
 
 #[derive(Debug)]
-pub struct PythonParser<'src, 'a, 'p, V: ParseVisitor> {
+pub struct PythonParser<'src, 'a, 'p> {
     pub arena: &'a Allocator,
     pub parser: Parser<'src, 'a>,
     expression_context: ExprContext,
     pub pool: &'p mut ConstantPool<'a>,
-    pub visitor: V
 }
-impl<'src, 'a, 'p, V: ParseVisitor> PythonParser<'src, 'a, 'p, V> {
-    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>, pool: &'p mut ConstantPool<'a>, visitor: V) -> Self {
+impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
+    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>, pool: &'p mut ConstantPool<'a>) -> Self {
         PythonParser {
-            arena, parser, pool, visitor,
+            arena, parser, pool,
             expression_context: Default::default(),
         }
     }
@@ -43,7 +40,7 @@ impl<'src, 'a, 'p, V: ParseVisitor> PythonParser<'src, 'a, 'p, V> {
         })
     }
 }
-impl<'src, 'a, 'p, V: ParseVisitor> IParser<'src, 'a> for PythonParser<'src, 'a, 'p, V> {
+impl<'src, 'a, 'p> IParser<'src, 'a> for PythonParser<'src, 'a, 'p> {
     #[inline]
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a> {
         &mut self.parser

@@ -13,21 +13,20 @@ use crate::ast::constants::FloatLiteral;
 use crate::ast::tree::*;
 use crate::lexer::Token;
 use crate::parse::errors::ParseError;
-use crate::parse::visitor::{ParseVisitor, ExprVisitor};
 use crate::vec;
 
 use super::PythonParser;
 use super::parser::{IParser, SpannedToken};
 
-struct PrefixParser<'src, 'a, 'p, V: ParseVisitor<'a>> {
+struct PrefixParser<'src, 'a, 'p> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a, 'p, V>,
+        parser: &mut PythonParser<'src, 'a, 'p>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
 }
-struct InfixParser<'src, 'a, 'p, V: ParseVisitor<'a>> {
+struct InfixParser<'src, 'a, 'p> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a, 'p, V>,
+        parser: &mut PythonParser<'src, 'a, 'p>,
         left: Expr<'a>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
@@ -138,11 +137,11 @@ impl Add<u8> for ExprPrec {
             .unwrap_or_else(|| panic!("Cannot add {:?} + {}", self, rhs))
     }
 }
-impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
+impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// Parse an expression
     ///
     /// Parses anything regardless of precedence
-    pub fn expression(&mut self) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
+    pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
         self.parse_prec(ExprPrec::MIN_PREC)
     }
     /// Parse an expression, accepting anything that has at least the specified precedence (or binding power)
@@ -156,7 +155,7 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
     /// You would call parse_prec(*) with the `6 + 3` on your right.
     /// Since `+` has a lower precedence (less binding power) than the min_prec `+`,
     /// it would **NOT** be consumed.
-    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<V::ExprVisit::Expr, ParseError<V>>{
+    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
         let token = self.parser.peek_tk();
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
@@ -185,7 +184,7 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
             }
         }
     }
-    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p, V>> {
+    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p>> {
         let func = match *token {
             Token::Ident(_) => Self::name,
             Token::True | Token::False |
@@ -210,7 +209,7 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
         };
         Some(PrefixParser { func })
     }
-    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p, V>> {
+    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p>> {
         Some(match *token {
             Token::Plus | Token::Minus | 
             Token::Star | Token::At |
@@ -226,7 +225,7 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
             _ => return None
         })
     }
-    fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
+    fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let op = match Operator::from_token(&tk.kind) {
             Some(it) => it,
             _ => unreachable!(),
@@ -255,9 +254,11 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
             start: left.span().start,
             end: right.span().end
         };
-        Ok(self.visitor.expr_visitor().visit_bin_op(span, left, op, right)?)
+        Ok(&*self.arena.alloc(ExprKind::BinOp {
+            span, left, right, op
+        })?)
     }
-    fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
+    fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let op = match UnaryOp::from_token(&tk.kind) {
             Some(op) => op,
             None => unreachable!()
@@ -267,17 +268,19 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
             start: tk.span.start,
             end: right.span().end
         };
-        Ok(self.visitor.expr_visitor().visit_unary_op(span, op, right)?)
+        Ok(&*self.arena.alloc(ExprKind::UnaryOp {
+            operand: right, span, op
+        })?)
     }
-    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
+    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let symbol = match **tk {
             Token::Ident(inner) => inner, 
             _ => unreachable!()
         };
         let ident = Ident { symbol, span: tk.span };
-        Ok(self.visitor.expr_visitor().visit_name(ident)?)
+        Ok(&*self.arena.alloc(ExprKind::Name { span: ident.span, ctx: self.expression_context, id: ident })?)
     }
-    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError> {
+    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let span = tk.span;
         let mut kind = None;
         let constant = match tk.kind {
@@ -309,15 +312,15 @@ impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
          * Otherwise, it is `None`.
          * https://greentreesnakes.readthedocs.io/en/latest/nodes.html#Constant
          */
-        Ok(self.visitor.expr_visitor().visit_constant(span, kind, constant)?)
+        Ok(&*self.arena.alloc(ExprKind::Constant {
+            span, kind, value: constant
+        })?)
     }
     #[inline]
     fn peek_is_comprehension(&self) -> bool {
         matches!(self.parser.peek(), Some(Token::Async) | Some(Token::For))
     }
-    fn parse_single_comprehension(
-        &mut self, visitor: ComprehensionVisitor,
-    ) -> Result<Comprehension<'a>, ParseError> {
+    fn parse_single_comprehension(&mut self) -> Result<Comprehension<'a>, ParseError> {
         let is_async = if let Some(Token::Async) = self.parser.peek() {
             self.parser.skip()?;
             true
@@ -666,12 +669,13 @@ mod test {
     use pretty_assertions::assert_eq;
 
     use crate::alloc::{Allocator, AllocError};
-    use crate::ast::{Constant, Ident, Span};
+    use crate::ast::{Constant, Ident, Span, AstBuilder};
     use crate::ast::constants::ConstantPool;
     use crate::ast::ident::SymbolTable;
     use crate::ast::tree::*;
     use crate::parse::ExprPrec;
     use crate::ParseMode;
+    use std::cell::RefCell;
 
     macro_rules! vec {
         ($ctx:expr) => (vec![$ctx,]);
@@ -682,27 +686,30 @@ mod test {
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
-        pool: &'p mut ConstantPool<'a>,
-        symbol_table: &'p mut SymbolTable<'a>
+        builder: AstBuilder<'a>,
+        pool: RefCell<&'p mut ConstantPool<'a>>,
+        symbol_table: RefCell<&'p mut SymbolTable<'a>>
     }
     impl<'a, 'p> TestContext<'a, 'p> {
-        fn int(&mut self, i: i64) -> Expr<'a> {
-            let val = self.pool.int(DUMMY, i).unwrap();
+        fn int(&self, i: i64) -> Expr<'a> {
+            let mut pool = self.pool.borrow_mut();
+            let val = pool.int(DUMMY, i).unwrap();
             self.constant(val)
         }
-        fn ident(&mut self, s: &'static str) -> Ident<'a> {
+        fn ident(&self, s: &'static str) -> Ident<'a> {
+            let mut symbol_table = self.symbol_table.borrow_mut();
             Ident {
-                symbol: self.symbol_table.alloc(s).unwrap(),
+                symbol: symbol_table.alloc(s).unwrap(),
                 span: DUMMY
             }
         }
         fn expr(&self, e: ExprKind<'a>) -> Expr<'a> {
-            &*self.arena.alloc(e).unwrap()
+            self.builder.expr(e).unwrap()
         }
         fn bin_op(&self, left: Expr<'a>, op: Operator, right: Expr<'a>) -> Expr<'a> {
-            self.expr(self.expr)
+            self.expr(ExprKind::BinOp { left, op, right, span: DUMMY })
         }
-        fn name(&mut self, s: &'static str) -> Expr<'a> {
+        fn name(&self, s: &'static str) -> Expr<'a> {
             self.arena.alloc(ExprKind::Name {
                 span: DUMMY, id: self.ident(s),
                 ctx: ExprContext::Load
@@ -722,7 +729,8 @@ mod test {
         let mut pool = ConstantPool::new(&arena);
         let mut symbol_table = SymbolTable::new(&arena);
         let expected = {
-            let mut ctx = TestContext { arena: &arena, pool: &mut pool, symbol_table: &mut symbol_table };
+            let mut ctx = TestContext { arena: &arena, pool: RefCell::new(&mut pool), builder: AstBuilder { arena: &arena },
+                symbol_table: RefCell::new(&mut symbol_table) };
             expected(&mut ctx).unwrap()
         };
         let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool, &mut symbol_table)
@@ -737,29 +745,26 @@ mod test {
     #[test]
     fn literals() {
         test_expr("5", |ctx| Ok(ctx.int(5)));
-        test_expr("5 + 5", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: ctx.int(5), op: Operator::Add, right: ctx.int(5)
-        })))
+        test_expr("5 + 5", |ctx| Ok(ctx.bin_op(
+            ctx.int(5), Operator::Add, ctx.int(5)
+        )));
     }
     #[test]
     fn arith_prec() {
         assert!(ExprPrec::Term < ExprPrec::Factor); // + has less binding power than '*'
-        test_expr("5 + 3 * 6", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: ctx.int(5), op: Operator::Add, right: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.int(3), op: Operator::Mult, right: ctx.int(6)
-            })
-        })));
-        test_expr("3 * 6 + 5", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.int(3), op: Operator::Mult, right: ctx.int(6)
-            }),
-            op: Operator::Add, right: ctx.int(5)
-        })));
+        test_expr("5 + 3 * 6", |ctx| Ok(ctx.bin_op(
+            ctx.int(5), Operator::Add,
+            ctx.bin_op(ctx.int(3), Operator::Mult, ctx.int(6))
+        )));
+        test_expr("3 * 6 + 5", |ctx| Ok(ctx.bin_op(
+            ctx.bin_op(ctx.int(3), Operator::Mult, ctx.int(6)),
+            Operator::Add, ctx.int(5)
+        )));
         // NOTE: This parses as -(1 ** 3)
-        test_expr("-1**3", |ctx| Ok(expr!(ctx, Expr :: UnaryOp {
-            span: DUMMY, op: Unaryop::USub, operand: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.int(1), op: Operator::Pow, right: ctx.int(3)
-            })
+        test_expr("-1**3", |ctx| Ok(ctx.expr(ExprKind::UnaryOp {
+            span: DUMMY, op: UnaryOp::USub, operand: ctx.bin_op(
+                ctx.int(1), Operator::Pow, ctx.int(3)
+            )
         })));
     }
     #[test]
@@ -780,126 +785,120 @@ mod test {
          * associativity.
          */
         // Should parse as ((1+2)+3) <left associative>
-        test_expr("1+2+3", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.int(1), op: Operator::Add, right: ctx.int(2)
-            }),
-            op: Operator::Add, right: ctx.int(3)
-        })));
+        test_expr("1+2+3", |ctx| Ok(ctx.bin_op(
+            ctx.bin_op(ctx.int(1), Operator::Add, ctx.int(2)),
+            Operator::Add, ctx.int(3)
+        )));
         /*
          * Should parse as (((1*2)*3)/4) <left associative>
          * NOTE: Multiplication and division *should* have the same precedence
          */
-        test_expr("1*2*3/4", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: expr!(ctx, Expr::BinOp {
-                span: DUMMY,
-                left: expr!(ctx, Expr::BinOp {
-                    span: DUMMY, left: ctx.int(1),
-                    op: Operator::Mult, right: ctx.int(2)
-                }),
-                op: Operator::Mult,
-                right: ctx.int(3)
-            }),
-            op: Operator::Div, right: ctx.int(4)
-        })));
+        test_expr("1*2*3/4", |ctx| Ok(ctx.bin_op(
+            ctx.bin_op(
+                ctx.bin_op(ctx.int(1), Operator::Mult, ctx.int(2)),
+                Operator::Mult, ctx.int(3)
+            ),
+            Operator::Div, ctx.int(4)
+        )));
 
         /*
          * Exponentiation is the only exception to the left associativity.
          * This parse as (1**(2**3)) <right associative>
          */
-        test_expr("1**2**3", |ctx| Ok(expr!(ctx, Expr::BinOp {
-            span: DUMMY, left: ctx.int(1),
-            op: Operator::Pow, right: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.int(2), op: Operator::Pow, right: ctx.int(3)
-            })
-        })))
+        test_expr("1**2**3", |ctx| Ok(ctx.bin_op(
+            ctx.int(1), Operator::Pow, ctx.bin_op(
+                ctx.int(2),  Operator::Pow, ctx.int(3)
+            )
+        )));
     }
     #[test]
     fn collections() {
-        test_expr("[1, 2, 3]", |ctx| Ok(expr!(ctx, Expr::List {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(3)].unwrap().into_slice(),
+        test_expr("[1, 2, 3]", |ctx| Ok(ctx.expr(ExprKind::List {
+            span: DUMMY, elts: vec!(ctx, ctx.int(1), ctx.int(2), ctx.int(3)),
             ctx: ExprContext::Load
         })));
         let list_of_one: for<'a, 'p> fn(&mut TestContext<'a, 'p>) -> Result<Expr<'a>, _> = |ctx| {
-            Ok(expr!(ctx, Expr::List {
-                span: DUMMY, elts: vec![in ctx.arena; ctx.int(1)].unwrap().into_slice(),
+            Ok(ctx.expr(ExprKind::List {
+                span: DUMMY,
+                elts: vec!(ctx, ctx.int(1)),
                 ctx: ExprContext::Load
             }))
         };
         test_expr("[1]", list_of_one);
         test_expr("[1,]", list_of_one);
-        test_expr("[1,2]", |ctx| Ok(expr!(ctx, Expr::List {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2)].unwrap().into_slice(),
+        test_expr("[1,2]", |ctx| Ok(ctx.expr(ExprKind::List {
+            span: DUMMY, elts: vec![ctx, ctx.int(1), ctx.int(2)],
             ctx: ExprContext::Load
         })));
-        test_expr("[]", |ctx| Ok(expr!(ctx, Expr::List {
-            span: DUMMY, elts: vec![in ctx.arena]?.into_slice(),
+        test_expr("[]", |ctx| Ok(ctx.expr(ExprKind::List {
+            span: DUMMY, elts: &[],
             ctx: ExprContext::Load
         })));
-        test_expr("[1, 2, 4,]", |ctx| Ok(expr!(ctx, Expr::List {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(4)]?.into_slice(),
+        test_expr("[1, 2, 4,]", |ctx| Ok(ctx.expr(ExprKind::List {
+            span: DUMMY, elts: vec![ctx, ctx.int(1), ctx.int(2), ctx.int(4)],
             ctx: ExprContext::Load
         })));
-        test_expr("(1, foo)", |ctx| Ok(expr!(ctx, Expr::Tuple {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo")]?.into_slice(),
+        test_expr("(1, foo)", |ctx| Ok(ctx.expr(ExprKind::Tuple {
+            span: DUMMY, elts: vec![ctx, ctx.int(1), ctx.name("foo")],
             ctx: ExprContext::Load
         })));
-        test_expr("(1, foo, toad,)", |ctx| Ok(expr!(ctx, Expr::Tuple {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo"), ctx.name("toad")]?.into_slice(),
+        test_expr("(1, foo, toad,)", |ctx| Ok(ctx.expr(ExprKind::Tuple {
+            span: DUMMY, elts: vec![ctx, ctx.int(1), ctx.name("foo"), ctx.name("toad")],
             ctx: ExprContext::Load
         })));
     }
     #[test]
     fn comprehensions() {
-        test_expr("[e for e in l]", |ctx| Ok(expr!(ctx, Expr::ListComp {
-            span: DUMMY, elt: ctx.name("e"), generators: vec![in ctx.arena; Comprehension {
+        test_expr("[e for e in l]", |ctx| Ok(ctx.expr(ExprKind::ListComp {
+            span: DUMMY, elt: ctx.name("e"), generators: vec!(ctx, Comprehension {
                 target: ctx.name("e"), iter: ctx.name("l"), ifs: &[], is_async: false
-            }]?.into_slice()
+            })
         })));
-        test_expr("[e1 * e2 for e1 in l1 for e2 in l2]", |ctx| Ok(expr!(ctx, Expr::ListComp {
-            span: DUMMY, elt: expr!(ctx, Expr::BinOp {
-                span: DUMMY, left: ctx.name("e1"),
-                op: Operator::Mult,
-                right: ctx.name("e2")
-            }), generators: vec![in ctx.arena; Comprehension {
+        test_expr("[e1 * e2 for e1 in l1 for e2 in l2]", |ctx| Ok(ctx.expr(ExprKind::ListComp {
+            span: DUMMY, elt: ctx.bin_op(
+                ctx.name("e1"),
+                Operator::Mult,
+                ctx.name("e2")
+            ),
+            generators: vec![ctx, Comprehension {
                 target: ctx.name("e1"), iter: ctx.name("l1"), ifs: &[], is_async: false
             }, Comprehension {
                 target: ctx.name("e2"), iter: ctx.name("l2"), ifs: &[], is_async: false
-            }]?.into_slice()
+            }]
         })));
-        test_expr("[e async for e in l if e + 3]", |ctx| Ok(expr!(ctx, Expr::ListComp {
+        test_expr("[e async for e in l if e + 3]", |ctx| Ok(ctx.expr(ExprKind::ListComp {
             span: DUMMY, elt: ctx.name("e"),
-            generators: vec![in ctx.arena; Comprehension {
+            generators: vec![ctx, Comprehension {
                 target: ctx.name("e"), iter: ctx.name("l"),
-                ifs: vec![in ctx.arena; expr!(ctx, Expr::BinOp {
-                    span: DUMMY, left: ctx.name("e"),
-                    op: Operator::Add,
-                    right: ctx.int(3)
-                })]?.into_slice(),
+                ifs: vec![ctx, ctx.bin_op(
+                    ctx.name("e"),
+                    Operator::Add,
+                    ctx.int(3)
+                )],
                 is_async: true
-            }]?.into_slice()
+            }]
         })));
-        test_expr("(i for i in gen)", |ctx| Ok(expr!(ctx, Expr::GeneratorExp {
+        test_expr("(i for i in gen)", |ctx| Ok(ctx.expr(ExprKind::GeneratorExp {
             span: DUMMY, elt: ctx.name("i"),
-            generators: vec![in ctx.arena; Comprehension {
+            generators: vec![ctx, Comprehension {
                 target: ctx.name("i"), iter: ctx.name("gen"),
                 ifs: &[], is_async: false
-            }]?.into_slice()
+            }]
         })));
     }
     #[test]
     fn dictionaries() {
-        test_expr("{}", |ctx| Ok(expr!(ctx, Expr::Dict {
+        test_expr("{}", |ctx| Ok(ctx.expr(ExprKind::Dict {
             span: DUMMY, elements: &[]
         })));
-        test_expr("{key: value}", |ctx| Ok(expr!(ctx, Expr::Dict {
-            span: DUMMY,elements: vec![in ctx.arena; (ctx.name("key"), ctx.name("value"))]?.into_slice()
+        test_expr("{key: value}", |ctx| Ok(ctx.expr(ExprKind::Dict {
+            span: DUMMY,elements: vec!(ctx, (ctx.name("key"), ctx.name("value")))
         })));
-        test_expr("{key: value,}", |ctx| Ok(expr!(ctx, Expr::Dict {
-            span: DUMMY,elements: vec![in ctx.arena; (ctx.name("key"), ctx.name("value"))]?.into_slice()
+        test_expr("{key: value,}", |ctx| Ok(ctx.expr(ExprKind::Dict {
+            span: DUMMY, elements: vec!(ctx, (ctx.name("key"), ctx.name("value")))
         })));
-        test_expr("{a: b, c: d}", |ctx| Ok(expr!(ctx, Expr::Dict {
-            span: DUMMY, elements: vec![in ctx.arena; (ctx.name("a"), ctx.name("b")), (ctx.name("c"), ctx.name("d"))]?.into_slice()
+        test_expr("{a: b, c: d}", |ctx| Ok(ctx.expr(ExprKind::Dict {
+            span: DUMMY, elements: vec!(ctx, (ctx.name("a"), ctx.name("b")), (ctx.name("c"), ctx.name("d")))
         })));
     }
 }

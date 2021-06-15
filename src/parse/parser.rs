@@ -1,12 +1,11 @@
 use std::collections::VecDeque;
-use std::fmt::{self, Debug, Display, Formatter};
+use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::option::Option::None;
 
-use crate::alloc::{Allocator, AllocError};
+use crate::alloc::{Allocator};
 use crate::ast::Span;
-use crate::lexer::{LexError, PythonLexer, StringError, Token};
+use crate::lexer::{LexError, PythonLexer, Token};
 use crate::parse::errors::{ParseError, ParseErrorKind};
 
 #[derive(Copy, Clone, Debug)]

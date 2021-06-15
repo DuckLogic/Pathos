@@ -46,7 +46,6 @@ pub trait Spanned {
 #[derive(Copy, Clone, Debug)]
 pub struct AstBuilder<'a> {
     pub arena: &'a Allocator,
-    pub current_expression_context: ExprContext
 }
 impl<'a> AstBuilder<'a> {
     /// Create an expression of the specified [ExprKind]
