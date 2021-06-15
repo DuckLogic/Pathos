@@ -1,7 +1,5 @@
 use std::fmt::{self, Formatter, Debug, Display};
 
-#[macro_use]
-mod macros;
 pub mod constants;
 pub mod tree;
 pub mod ident;
@@ -9,6 +7,8 @@ pub mod ident;
 pub use self::constants::{Constant};
 pub use crate::alloc::Allocator;
 pub use self::ident::Ident;
+use crate::ast::tree::{ExprKind, Expr, ExprContext};
+use crate::alloc::AllocError;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Span {
@@ -41,4 +41,17 @@ pub trait Spanned {
 }
 
 
-
+/// A [ParseVisitor](crate::parse::visitor::ParseVisitor) that constructs
+/// an abstract syntax tree
+#[derive(Copy, Clone, Debug)]
+pub struct AstBuilder<'a> {
+    pub arena: &'a Allocator,
+    pub current_expression_context: ExprContext
+}
+impl<'a> AstBuilder<'a> {
+    /// Create an expression of the specified [ExprKind]
+    #[inline]
+    pub fn expr(&self, kind: ExprKind<'a>) -> Result<Expr<'a>, AllocError> {
+        Ok(self.arena.alloc(kind)?)
+    }
+}

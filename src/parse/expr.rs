@@ -4,28 +4,30 @@
 //!
 //! See also [this (C) pratt parser, implemented in crafting interpreters](http://craftinginterpreters.com/compiling-expressions.html#parsing-prefix-expressions)
 //! See also [this example code](https://github.com/munificent/bantam)
-use crate::ast::constants::FloatLiteral;
-use crate::lexer::{Token};
-use crate::ast::{Ident, Span, Spanned};
-use crate::ast::tree::*;
-
-use super::parser::{SpannedToken, IParser, ParseError};
-use super::{PythonParser};
-
-use crate::vec;
-use crate::alloc::{Allocator, AllocError, Vec};
-use std::ops::{Sub, Add};
 use std::fmt::Display;
+use std::ops::{Add, Sub};
 
-struct PrefixParser<'src, 'a, 'p> {
+use crate::alloc::{Allocator, AllocError, Vec};
+use crate::ast::{Ident, Span, Spanned};
+use crate::ast::constants::FloatLiteral;
+use crate::ast::tree::*;
+use crate::lexer::Token;
+use crate::parse::errors::ParseError;
+use crate::parse::visitor::{ParseVisitor, ExprVisitor};
+use crate::vec;
+
+use super::PythonParser;
+use super::parser::{IParser, SpannedToken};
+
+struct PrefixParser<'src, 'a, 'p, V: ParseVisitor<'a>> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a, 'p>,
+        parser: &mut PythonParser<'src, 'a, 'p, V>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
 }
-struct InfixParser<'src, 'a, 'p> {
+struct InfixParser<'src, 'a, 'p, V: ParseVisitor<'a>> {
     func: fn(
-        parser: &mut PythonParser<'src, 'a, 'p>,
+        parser: &mut PythonParser<'src, 'a, 'p, V>,
         left: Expr<'a>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
@@ -90,7 +92,7 @@ pub enum ExprPrec {
     /// This binds less tightly than an arithmetic
     /// or bitwise unary operator on its right,
     /// that is, 2**-1 is 0.5.
-    Exponentation,
+    Exponentiation,
     /// An await expression: `await`
     Await,
     /// Subscription, slicing, call, attribute reference:
@@ -136,12 +138,11 @@ impl Add<u8> for ExprPrec {
             .unwrap_or_else(|| panic!("Cannot add {:?} + {}", self, rhs))
     }
 }
-
-impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
+impl<'src, 'a, 'p, V: ParseVisitor<'a>> PythonParser<'src, 'a, 'p, V> {
     /// Parse an expression
     ///
     /// Parses anything regardless of precedence
-    pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
+    pub fn expression(&mut self) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
         self.parse_prec(ExprPrec::MIN_PREC)
     }
     /// Parse an expression, accepting anything that has at least the specified precedence (or binding power)
@@ -155,7 +156,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// You would call parse_prec(*) with the `6 + 3` on your right.
     /// Since `+` has a lower precedence (less binding power) than the min_prec `+`,
     /// it would **NOT** be consumed.
-    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
+    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<V::ExprVisit::Expr, ParseError<V>>{
         let token = self.parser.peek_tk();
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
@@ -184,7 +185,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
         }
     }
-    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p>> {
+    fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p, V>> {
         let func = match *token {
             Token::Ident(_) => Self::name,
             Token::True | Token::False |
@@ -209,7 +210,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         };
         Some(PrefixParser { func })
     }
-    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p>> {
+    fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p, V>> {
         Some(match *token {
             Token::Plus | Token::Minus | 
             Token::Star | Token::At |
@@ -225,7 +226,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             _ => return None
         })
     }
-    fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+    fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
         let op = match Operator::from_token(&tk.kind) {
             Some(it) => it,
             _ => unreachable!(),
@@ -254,12 +255,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             start: left.span().start,
             end: right.span().end
         };
-        Ok(&*self.arena.alloc(ExprKind::BinOp {
-            left, span, op, right
-        })?)
+        Ok(self.visitor.expr_visitor().visit_bin_op(span, left, op, right)?)
     }
-    fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
-        let op = match Unaryop::from_token(&tk.kind) {
+    fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
+        let op = match UnaryOp::from_token(&tk.kind) {
             Some(op) => op,
             None => unreachable!()
         };
@@ -268,22 +267,17 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             start: tk.span.start,
             end: right.span().end
         };
-        Ok(&*self.arena.alloc(ExprKind::UnaryOp {
-            span, op, operand: right
-        })?)
+        Ok(self.visitor.expr_visitor().visit_unary_op(span, op, right)?)
     }
-    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+    fn name(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError<V::Err>> {
         let symbol = match **tk {
             Token::Ident(inner) => inner, 
             _ => unreachable!()
         };
         let ident = Ident { symbol, span: tk.span };
-        Ok(&*self.arena.alloc(ExprKind::Name {
-            span: tk.span, id: ident,
-            ctx: self.expression_context
-        })?)
+        Ok(self.visitor.expr_visitor().visit_name(ident)?)
     }
-    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+    fn constant(&mut self, tk: &SpannedToken<'a>) -> Result<V::ExprVisit::Expr, ParseError> {
         let span = tk.span;
         let mut kind = None;
         let constant = match tk.kind {
@@ -315,16 +309,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
          * Otherwise, it is `None`.
          * https://greentreesnakes.readthedocs.io/en/latest/nodes.html#Constant
          */
-        Ok(&*self.arena.alloc(ExprKind::Constant {
-            span, kind, value: constant
-        })?)
+        Ok(self.visitor.expr_visitor().visit_constant(span, kind, constant)?)
     }
     #[inline]
     fn peek_is_comprehension(&self) -> bool {
         matches!(self.parser.peek(), Some(Token::Async) | Some(Token::For))
     }
     fn parse_single_comprehension(
-        &mut self,
+        &mut self, visitor: ComprehensionVisitor,
     ) -> Result<Comprehension<'a>, ParseError> {
         let is_async = if let Some(Token::Async) = self.parser.peek() {
             self.parser.skip()?;
@@ -343,9 +335,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             self.parser.skip()?; // Om nom nom
             /*
              * For the precedence of the condition in a comprehension expression,
-             * we can have anything higher than a conditional expression (since that would be nonsence).
+             * we can have anything higher than a conditional expression (since that would be nonsense).
              * In other words it is illegal to have [e for e in l if (1 if e else 5)]
-             * without having the parantheses.
+             * without having the parentheses.
              * NOTE: It is legal to parse these as two seperate if conditions.
              */
             ifs.push(self.parse_prec(ExprPrec::Conditional + 1)?)?;
@@ -667,19 +659,26 @@ impl CollectionType {
 
 #[cfg(test)]
 mod test {
-    use crate::alloc::{Allocator, AllocError};
+    use std::backtrace::Backtrace;
+    use std::error::Error;
+
     use bumpalo::Bump;
     use pretty_assertions::assert_eq;
-    use crate::ast::tree::*;
-    use crate::ParseMode;
-    use crate::ast::{Span, Ident, Constant};
+
+    use crate::alloc::{Allocator, AllocError};
+    use crate::ast::{Constant, Ident, Span};
     use crate::ast::constants::ConstantPool;
-    use crate::{expr};
-    use crate::{vec};
-    use std::error::Error;
-    use std::backtrace::Backtrace;
-    use crate::parse::ExprPrec;
     use crate::ast::ident::SymbolTable;
+    use crate::ast::tree::*;
+    use crate::parse::ExprPrec;
+    use crate::ParseMode;
+
+    macro_rules! vec {
+        ($ctx:expr) => (vec![$ctx,]);
+        ($ctx:expr, $($elements:expr),*) => {
+            &*crate::vec![in $ctx.arena; $($elements),*].unwrap().into_slice()
+        };
+    }
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
@@ -696,6 +695,12 @@ mod test {
                 symbol: self.symbol_table.alloc(s).unwrap(),
                 span: DUMMY
             }
+        }
+        fn expr(&self, e: ExprKind<'a>) -> Expr<'a> {
+            &*self.arena.alloc(e).unwrap()
+        }
+        fn bin_op(&self, left: Expr<'a>, op: Operator, right: Expr<'a>) -> Expr<'a> {
+            self.expr(self.expr)
         }
         fn name(&mut self, s: &'static str) -> Expr<'a> {
             self.arena.alloc(ExprKind::Name {

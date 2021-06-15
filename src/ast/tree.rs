@@ -347,7 +347,7 @@ pub enum ExprKind<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        op: Unaryop,
+        op: UnaryOp,
         operand: Expr<'a>,
     },
     Lambda {
@@ -633,7 +633,7 @@ impl Operator {
             Operator::Mult | Operator::MatMult |
             Operator::Div | Operator::Mod |
             Operator::FloorDiv => ExprPrec::Factor,
-            Operator::Pow => ExprPrec::Exponentation,
+            Operator::Pow => ExprPrec::Exponentiation,
             Operator::LShift | Operator::RShift => ExprPrec::Shifts,
             Operator::BitOr => ExprPrec::BitwiseOr,
             Operator::BitXor => ExprPrec::BitwiseXor,
@@ -643,30 +643,30 @@ impl Operator {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Unaryop {
+pub enum UnaryOp {
     Invert,
     Not,
     UAdd,
     USub,
 }
-impl Unaryop {
+impl UnaryOp {
     #[inline]
     pub fn from_token(tk: &Token) -> Option<Self> {
         Some(match *tk {
-            Token::BitwiseInvert => Unaryop::Invert,
-            Token::Not => Unaryop::Not,
-            Token::Plus => Unaryop::UAdd,
-            Token::Minus => Unaryop::USub,
+            Token::BitwiseInvert => UnaryOp::Invert,
+            Token::Not => UnaryOp::Not,
+            Token::Plus => UnaryOp::UAdd,
+            Token::Minus => UnaryOp::USub,
             _ => return None
         })
     }
     #[inline]
     pub fn precedence(self) -> ExprPrec {
         match self {
-            Unaryop::Invert |
-            Unaryop::Not |
-            Unaryop::UAdd |
-            Unaryop::USub => ExprPrec::Unary,
+            UnaryOp::Invert |
+            UnaryOp::Not |
+            UnaryOp::UAdd |
+            UnaryOp::USub => ExprPrec::Unary,
         }
     }
 }

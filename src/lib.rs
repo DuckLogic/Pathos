@@ -15,7 +15,7 @@ mod parse;
 #[cfg(feature = "unicode-named-escapes")]
 mod unicode_names;
 
-pub use self::parse::parser::ParseError;
+pub use parse::errors::ParseError;
 use crate::ast::ident::SymbolTable;
 
 /// The mode of operation to parse the code in

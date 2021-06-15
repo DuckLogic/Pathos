@@ -1,148 +1,13 @@
 use std::collections::VecDeque;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::marker::PhantomData;
-
-use crate::ast::Span;
-use crate::lexer::{PythonLexer, StringError, LexError, Token};
-use crate::alloc::{Allocator, AllocError};
-use std::fmt::{self, Display, Formatter, Debug};
 use std::ops::Deref;
-use std::backtrace::Backtrace;
-use std::error::Error;
 use std::option::Option::None;
 
-#[derive(Debug, Clone)]
-pub enum ParseErrorKind {
-    InvalidToken,
-    AllocationFailed,
-    UnexpectedEof,
-    UnexpectedToken,
-    InvalidString(StringError)
-}
-#[derive(Debug)]
-struct ParseErrorInner {
-    /// The span of the source location
-    ///
-    /// This is `None` if an out of
-    /// memory error occurs, otherwise
-    /// it must be present
-    span: Option<Span>,
-    expected: Option<String>,
-    actual: Option<String>,
-    kind: ParseErrorKind,
-    backtrace: Backtrace
-}
-#[derive(Debug)]
-pub struct ParseError(Box<ParseErrorInner>);
-impl ParseError {
-    /// Give additional context on the type of item that was "expected"
-    #[cold]
-    pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
-        self.0.expected = Some(msg.to_string());
-        self
-    }
-    #[inline]
-    pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
-        ParseErrorBuilder(ParseErrorInner {
-            span: Some(span), kind,
-            expected: None, actual: None,
-            backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
-        })
-    }
-}
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self.0.kind {
-            ParseErrorKind::InvalidToken => {
-                f.write_str("Invalid token")?;
-            }
-            ParseErrorKind::AllocationFailed => {
-                f.write_str("Allocation failed")?;
-            }
-            ParseErrorKind::UnexpectedEof => {
-                f.write_str("Unexpected EOF")?;
-            }
-            ParseErrorKind::UnexpectedToken => {
-                f.write_str("Unexpected token")?;
-            }
-            ParseErrorKind::InvalidString(ref cause) => {
-                write!(f, "Invalid string ({})", cause)?;
-            }
-        }
-        match (&self.0.expected, &self.0.actual) {
-            (Some(ref expected), Some(ref actual)) => {
-                write!(f, ": Expected {:?}, but got {:?}", expected, actual)?;
-            },
-            (Some(ref expected), None) => {
-                write!(f, ": Expected {:?}", expected)?;
-            },
-            (None, Some(ref actual)) => {
-                write!(f, ": Got {:?}", actual)?;
-            },
-            (None, None) => {}
-        }
-        if let Some(span) = self.0.span {
-            write!(f, " @ {}", span)?;
-        }
-        Ok(())
-    }
-}
-impl std::error::Error for ParseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self.0.kind {
-            ParseErrorKind::InvalidString(ref cause) => Some(cause),
-            _ => None
-        }
-    }
-
-    #[inline]
-    fn backtrace(&self) -> Option<&Backtrace> {
-        Some(&self.0.backtrace)
-    }
-
-}
-impl From<AllocError> for ParseError {
-    #[cold]
-    fn from(_cause: AllocError) -> ParseError {
-        /*
-         * This is a bit of a conondrum.
-         * We're allocating memory for the error value
-         * even though we have an 'out of memory'
-         * condition.
-         * Realistically though, we'll probably only encounter
-         * OOM if the counter hits the internal limit.
-         */
-        ParseError(Box::new(ParseErrorInner {
-            span: None,
-            expected: None,
-            actual: None,
-            kind: ParseErrorKind::AllocationFailed,
-            backtrace: Backtrace::capture()
-        }))
-    }
-}
-pub struct ParseErrorBuilder(ParseErrorInner);
-impl ParseErrorBuilder {
-    #[inline]
-    pub fn expected(mut self, f: impl ToString) -> Self {
-        self.0.expected = Some(f.to_string());
-        self
-    }
-    #[inline]
-    pub fn actual(mut self, f: impl ToString) -> Self {
-        self.0.actual = Some(f.to_string());
-        self
-    }
-    #[inline]
-    pub fn build(mut self) -> ParseError {
-        ParseError(Box::new(ParseErrorInner {
-            span: self.0.span,
-            kind: self.0.kind,
-            expected: self.0.expected.take(),
-            actual: self.0.actual.take(),
-            backtrace: Backtrace::capture()
-        }))
-    }
-}
+use crate::alloc::{Allocator, AllocError};
+use crate::ast::Span;
+use crate::lexer::{LexError, PythonLexer, StringError, Token};
+use crate::parse::errors::{ParseError, ParseErrorKind};
 
 #[derive(Copy, Clone, Debug)]
 pub struct SpannedToken<'a> {
@@ -164,16 +29,16 @@ impl<'a> PartialEq<Token<'a>> for SpannedToken<'a> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub enum SeperatorParseState {
+pub enum SeparatorParseState {
     AwaitingStart,
     AwaitingNext,
-    AwaitingSeperator,
+    AwaitingSeparator,
     Finished,
 }
-impl Default for SeperatorParseState {
+impl Default for SeparatorParseState {
     #[inline]
-    fn default() -> SeperatorParseState {
-        SeperatorParseState::AwaitingStart
+    fn default() -> SeparatorParseState {
+        SeparatorParseState::AwaitingStart
     }
 }
 pub trait EndFunc<'src, 'a> {
@@ -234,7 +99,7 @@ pub struct ParseSeperated<
     pub parse_func: ParseFunc,
     pub separator: Token<'a>,
     pub end_func: E,
-    pub state: SeperatorParseState,
+    pub state: SeparatorParseState,
     /// Allow an extra (redundant) separator
     /// to terminate the list of parsed items.
     ///
@@ -259,7 +124,7 @@ impl<'p, 'src, 'a,
         ParseSeperated {
             parser, parse_func,
             separator,
-            end_func, state: SeperatorParseState::AwaitingStart,
+            end_func, state: SeparatorParseState::AwaitingStart,
             allow_terminator, marker: PhantomData,
         }
     }
@@ -283,7 +148,7 @@ impl<'p, 'src, 'a,
     #[inline]
     fn maybe_end_parse(&mut self) -> bool {
         if self.end_func.should_end(self.parser.as_parser()) {
-            self.state = SeperatorParseState::Finished;
+            self.state = SeparatorParseState::Finished;
             true // We want to end the parse
         } else {
             false
@@ -301,7 +166,7 @@ impl<'p, 'src, 'a: 'p,
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.state {
-                SeperatorParseState::AwaitingStart => {
+                SeparatorParseState::AwaitingStart => {
                     /*
                      * We've seen nothing yet
                      * Decide if we should end it 
@@ -315,7 +180,7 @@ impl<'p, 'src, 'a: 'p,
                     }
                     // fallthrough to parse item
                 },
-                SeperatorParseState::AwaitingNext => {
+                SeparatorParseState::AwaitingNext => {
                     /*
                      * We've already seen a separator
                      * and are ready to parse the next item.
@@ -331,7 +196,7 @@ impl<'p, 'src, 'a: 'p,
                     }
                     // fallthrough to parse item
                 }
-                SeperatorParseState::AwaitingSeperator => {
+                SeparatorParseState::AwaitingSeparator => {
                     let parser = self.parser.as_mut_parser();
                     match parser.peek() {
                         Some(tk) if tk == self.separator => {
@@ -339,7 +204,7 @@ impl<'p, 'src, 'a: 'p,
                                 Ok(_) => {},
                                 Err(e) => return Some(Err(e))
                             };
-                            self.state = SeperatorParseState::AwaitingNext;
+                            self.state = SeparatorParseState::AwaitingNext;
                             continue; // Continue parsing
                         },
                         Some(_) => {
@@ -356,13 +221,13 @@ impl<'p, 'src, 'a: 'p,
                     };
                     return Some(Err(self.unexpected_separator()))
                 },
-                SeperatorParseState::Finished => {
+                SeparatorParseState::Finished => {
                     return None
                 }
             }
             match (self.parse_func)(&mut *self.parser) {
                 Ok(val) => {
-                    self.state = SeperatorParseState::AwaitingSeperator;
+                    self.state = SeparatorParseState::AwaitingSeparator;
                     return Some(Ok(val))
                 },
                 Err(e) => {
