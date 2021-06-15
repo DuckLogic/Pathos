@@ -494,10 +494,25 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 )?)
             }
         } else if collection_type.is_dict() {
+            /*
+             * Two possibilities here: ',' or '}'
+             *
+             * See comment in the final 'else' clause for more detailed reasoning.
+             */
+            match self.parser.peek() {
+                Some(Token::Comma) => {
+                    self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
+                },
+                Some(Token::CloseBrace) => {
+                    // Ignore this, ParseSeperated will handle it for us
+                }
+                _ => {
+                    return Err(self.parser.unexpected(&"Either a comprehension, a comma, or '}'"));
+                }
+            }
             let mut elements: Vec<(Expr<'a>, Expr<'a>)> = vec![in self.arena; (first, first_value.unwrap())]?;
             for val in self.parse_terminated(
-                Token::Comma,
-                Token::CloseBrace,
+                Token::Comma, Token::CloseBrace,
                 |parser| {
                     let key = parser.expression()?;
                     parser.parser.expect(Token::Colon)?;
@@ -517,33 +532,34 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             /*
              * These parentheses function for
              * grouping purposes only.
-             * See note above.
+             * See note above on the 'comma operator'.
              */
             Ok(first)
         } else {
             /*
-             * We should've already handled the case where we immediately
-             * encounter a closing bracket/paren without any comma.
-             * For example, in a list, what we already would've parsed should corresponds to: "[first"
-             * We have already checked for the first two of the four possibilities:
-             * 1. One element, than immediate closing "[first]"
-             * 2. Comprehension "[first for ....]"
-             * 3. One element, then comma, then immediate closing "[first,]"
-             * 4. One element, then comma, then more elements "[first, <more...>"
+             * We've already consumed the first expression,
+             * and we've ruled out the possibility of an generator.
+             * Therefore, the only remaining possibilities are a comma,
+             * or an immediate closing token.
+             * If we have a comma, consume it and then delegate to ParseSeperated.
+             * If we have a closing token, ignore it, and let ParseSeperated handle it.
              *
-             * We've already ruled out possibilities one and two above.
-             * Both possibilities two and three require a comma as the next token.
-             * If that's not the case, give a descriptive error message listing **all** cases (1-4).
-             * Once we consume a comma, we can delegate to "ParseSeperated"
-             * which will handle all remaining tokens (including possibility 3 of redundnant comma).
+             * If we encounter an error, we should of all three possibilities,
+             * including the option of a generator/comprehension.
              */
-            if self.parser.peek() == Some(Token::Comma) {
-                self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
-            }  else {
-                return Err(self.parser.unexpected(&format_args!(
-                    "Either an expression, a comprehension, a comma, or {:#}",
-                    collection_type.closing_token()
-                )));
+            match self.parser.peek() {
+                Some(Token::Comma) => {
+                    self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
+                },
+                Some(closing) if closing == collection_type.closing_token() => {
+                    // Ignore this, ParseSeperated will handle it for us
+                }
+                _ => {
+                    return Err(self.parser.unexpected(&format_args!(
+                        "Either a comprehension, a comma, or '{}'",
+                        collection_type.closing_token()
+                    )));
+                }
             }
             let mut elements = vec![in self.arena; first]?;
             for val in self.parse_terminated(
@@ -799,8 +815,16 @@ mod test {
             span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(3)].unwrap().into_slice(),
             ctx: ExprContext::Load
         })));
-        test_expr("[1,]", |ctx| Ok(expr!(ctx, Expr::List {
-            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1)].unwrap().into_slice(),
+        let list_of_one: for<'a, 'p> fn(&mut TestContext<'a, 'p>) -> Result<Expr<'a>, _> = |ctx| {
+            Ok(expr!(ctx, Expr::List {
+                span: DUMMY, elts: vec![in ctx.arena; ctx.int(1)].unwrap().into_slice(),
+                ctx: ExprContext::Load
+            }))
+        };
+        test_expr("[1]", list_of_one);
+        test_expr("[1,]", list_of_one);
+        test_expr("[1,2]", |ctx| Ok(expr!(ctx, Expr::List {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2)].unwrap().into_slice(),
             ctx: ExprContext::Load
         })));
         test_expr("[]", |ctx| Ok(expr!(ctx, Expr::List {
@@ -819,6 +843,9 @@ mod test {
             span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.name("foo"), ctx.name("toad")]?.into_slice(),
             ctx: ExprContext::Load
         })));
+    }
+    #[test]
+    fn comprehensions() {
         test_expr("[e for e in l]", |ctx| Ok(expr!(ctx, Expr::ListComp {
             span: DUMMY, elt: ctx.name("e"), generators: vec![in ctx.arena; Comprehension {
                 target: ctx.name("e"), iter: ctx.name("l"), ifs: &[], is_async: false
@@ -853,6 +880,21 @@ mod test {
                 target: ctx.name("i"), iter: ctx.name("gen"),
                 ifs: &[], is_async: false
             }]?.into_slice()
+        })));
+    }
+    #[test]
+    fn dictionaries() {
+        test_expr("{}", |ctx| Ok(expr!(ctx, Expr::Dict {
+            span: DUMMY, elements: &[]
+        })));
+        test_expr("{key: value}", |ctx| Ok(expr!(ctx, Expr::Dict {
+            span: DUMMY,elements: vec![in ctx.arena; (ctx.name("key"), ctx.name("value"))]?.into_slice()
+        })));
+        test_expr("{key: value,}", |ctx| Ok(expr!(ctx, Expr::Dict {
+            span: DUMMY,elements: vec![in ctx.arena; (ctx.name("key"), ctx.name("value"))]?.into_slice()
+        })));
+        test_expr("{a: b, c: d}", |ctx| Ok(expr!(ctx, Expr::Dict {
+            span: DUMMY, elements: vec![in ctx.arena; (ctx.name("a"), ctx.name("b")), (ctx.name("c"), ctx.name("d"))]?.into_slice()
         })));
     }
 }
