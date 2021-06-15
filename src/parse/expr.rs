@@ -474,7 +474,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
         }
         let first = self.expression()?;
-        let fisrt_value = if collection_type.is_dict() {
+        let first_value = if collection_type.is_dict() {
             /*
              * Check if it's actually a dict.
              * It's also possible it's just a set
@@ -504,7 +504,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 Ok(&*self.arena.alloc(ExprKind::DictComp {
                     span: Span { start, end },
                     key: first,
-                    value: fisrt_value.unwrap(),
+                    value: first_value.unwrap(),
                     generators: comprehensions.into_slice()
                 })?)
             } else {
@@ -514,7 +514,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 )?)
             }
         } else if collection_type.is_dict() {
-            let mut elements: Vec<(Expr<'a>, Expr<'a>)> = vec![in self.arena; (first, fisrt_value.unwrap())]?;
+            let mut elements: Vec<(Expr<'a>, Expr<'a>)> = vec![in self.arena; (first, first_value.unwrap())]?;
             for val in self.parse_terminated(
                 Token::Comma,
                 Token::CloseBrace,
@@ -541,6 +541,30 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              */
             Ok(first)
         } else {
+            /*
+             * We should've already handled the case where we immediately
+             * encounter a closing bracket/paren without any comma.
+             * For example, in a list, what we already would've parsed should corresponds to: "[first"
+             * We have already checked for the first two of the four possibilities:
+             * 1. One element, than immediate closing "[first]"
+             * 2. Comprehension "[first for ....]"
+             * 3. One element, then comma, then immediate closing "[first,]"
+             * 4. One element, then comma, then more elements "[first, <more...>"
+             *
+             * We've already ruled out possibilities one and two above.
+             * Both possibilities two and three require a comma as the next token.
+             * If that's not the case, give a descriptive error message listing **all** cases (1-4).
+             * Once we consume a comma, we can delegate to "ParseSeperated"
+             * which will handle all remaining tokens (including possibility 3 of redundnant comma).
+             */
+            if self.parser.peek() == Some(Token::Comma) {
+                self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
+            }  else {
+                return Err(self.parser.unexpected(&format_args!(
+                    "Either an expression, a comprehension, a comma, or {:#}",
+                    collection_type.closing_token()
+                )));
+            }
             let mut elements = vec![in self.arena; first]?;
             for val in self.parse_terminated(
                 Token::Comma,
@@ -652,7 +676,7 @@ mod test {
     use pretty_assertions::assert_eq;
     use crate::ast::tree::{Expr, ExprContext, ExprKind, Operator, Unaryop};
     use crate::ParseMode;
-    use crate::ast::{Span, Constant};
+    use crate::ast::{Span, Ident, Constant, RawIdent};
     use crate::ast::constants::ConstantPool;
     use crate::{ident, expr};
     use crate::{vec, count_exprs};
@@ -660,15 +684,23 @@ mod test {
     use std::backtrace::Backtrace;
     use crate::parse::ExprPrec;
     use crate::ast::tree::ExprKind::UnaryOp;
+    use hashbrown::HashMap;
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
-        pool: &'p mut ConstantPool<'a>
+        pool: &'p mut ConstantPool<'a>,
+        ident_pool: HashMap<&'static str, &'a RawIdent<'a>>
     }
     impl<'a, 'p> TestContext<'a, 'p> {
         fn int(&mut self, i: i64) -> Expr<'a> {
             let val = self.pool.int(DUMMY, i).unwrap();
             self.constant(val)
+        }
+        fn ident(&mut self, s: &'static str) -> Ident<'a> {
+            let arena = self.arena;
+            Ident::from_raw(DUMMY, self.ident_pool.entry(s)
+                .or_insert_with(|| arena.alloc(RawIdent::from_static_text(s)).unwrap()))
+                .unwrap()
         }
         fn constant(&self, value: Constant<'a>) -> Expr<'a> {
             self.arena.alloc(ExprKind::Constant {
@@ -683,7 +715,7 @@ mod test {
         let arena = Allocator::new(Bump::new());
         let mut pool = ConstantPool::new(&arena);
         let expected = {
-            let mut ctx = TestContext { arena: &arena, pool: &mut pool };
+            let mut ctx = TestContext { arena: &arena, pool: &mut pool, ident_pool: Default::default() };
             expected(&mut ctx).unwrap()
         };
         let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool)
@@ -780,6 +812,18 @@ mod test {
         test_expr("[1, 2, 3]", |ctx| Ok(expr!(ctx, Expr::List {
             span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(3)].unwrap().into_slice(),
             ctx: ExprContext::Load
-        })))
+        })));
+        test_expr("[1,]", |ctx| Ok(expr!(ctx, Expr::List {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1)].unwrap().into_slice(),
+            ctx: ExprContext::Load
+        })));
+        test_expr("[]", |ctx| Ok(expr!(ctx, Expr::List {
+            span: DUMMY, elts: vec![in ctx.arena]?.into_slice(),
+            ctx: ExprContext::Load
+        })));
+        test_expr("[1, 2, 4,]", |ctx| Ok(expr!(ctx, Expr::List {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(4)]?.into_slice(),
+            ctx: ExprContext::Load
+        })));
     }
 }

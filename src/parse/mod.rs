@@ -13,6 +13,7 @@ pub mod parser;
 mod expr;
 
 
+#[derive(Debug)]
 pub struct PythonParser<'src, 'a, 'p> {
     pub arena: &'a Allocator,
     pub parser: Parser<'src, 'a>,

@@ -100,7 +100,15 @@ impl<'a> ConstantPool<'a> {
         })
     }
 }
-
+impl Debug for ConstantPool<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        /*
+         * I'm not even going to list the interned constants
+         * I feel that it would be a waste of space.
+         */
+        f.debug_struct("ConstantPool").finish()
+    }
+}
 #[derive(Copy, Clone)]
 pub struct Constant<'a> {
     span: Span,

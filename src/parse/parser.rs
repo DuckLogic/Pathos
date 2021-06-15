@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use crate::ast::Span;
 use crate::lexer::{PythonLexer, StringError, LexError, Token};
 use crate::alloc::{Allocator, AllocError};
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Display, Formatter, Debug};
 use std::ops::Deref;
 use std::backtrace::Backtrace;
 use std::error::Error;
@@ -204,7 +204,7 @@ impl<'src, 'a, Func> EndFunc<'src, 'a> for Func
         "ending"
     }
 }
-pub trait IParser<'src, 'a>: Sized {
+pub trait IParser<'src, 'a>: Sized + Debug {
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
     fn as_parser(&self) -> &Parser<'src, 'a>;
     #[inline]
@@ -318,14 +318,13 @@ impl<'p, 'src, 'a,
                      * We've already seen a separator
                      * and are ready to parse the next item.
                      * This corresponds to case:
-                     * [a, b, c -> We are right before 'c' and ready to parse it.
-                     * Seeing an ending `]` would just be a plain old
-                     *
-                     * The only exception to this is if
-                     * we allow extra terminators.
-                     * We could potentially have [a, b,] in that case.
+                     * [a, b, c -> We are right after the comma, right before 'c', and ready to parse
+                     * the next item item.
+                     * If `!self.allow_terminator`, we dont allow trailing commas
+                     * so seeing an ending `]` would be error.
                      */
                     if self.allow_terminator && self.maybe_end_parse() {
+                        // Redundant comma
                         return None;
                     }
                     // fallthrough to parse item
@@ -342,7 +341,7 @@ impl<'p, 'src, 'a,
                             continue; // Continue parsing
                         },
                         Some(_) => {
-                            // We didn't see a seperator, but maybe we should end the parse
+                            // We didn't see a separator, but maybe we should end the parse
                             if self.maybe_end_parse() {
                                 return None;
                             } else {

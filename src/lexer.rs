@@ -1386,6 +1386,12 @@ mod test {
             Ident("b"), Comma, Ident("cat"),
             CloseParen,
         );
+        test_lex!(
+            "[1, 2, 3]",
+            OpenBracket, IntegerLiteral(1),
+            Comma, IntegerLiteral(2), Comma,
+            IntegerLiteral(3), CloseBracket,
+        );
     }
     #[test]
     fn indentation() {

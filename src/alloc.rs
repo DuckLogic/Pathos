@@ -1,7 +1,7 @@
 use std::{mem, slice, cmp, str};
 use std::ops::{Deref, DerefMut};
 use std::alloc::{Layout, LayoutError};
-use std::fmt::{self, Display, Formatter};
+use std::fmt::{self, Display, Formatter, Debug};
 use std::error::Error;
 use std::ptr::{NonNull};
 
@@ -17,7 +17,7 @@ macro_rules! count_exprs {
 }
 #[macro_export]
 macro_rules! vec {
-    (in $arena:expr) => ($crate::alloc::Vec::new());
+    (in $arena:expr) => (Result::<_, $crate::alloc::AllocError>::Ok($crate::alloc::Vec::new($arena)));
     (in $arena:expr; $($element:expr),*) => ({
         match $crate::alloc::Vec::with_capacity(
             $arena,
@@ -252,9 +252,16 @@ impl Allocator {
         self.limit = limit;
         self
     }
+    /// The pre-configured limit of this allocator, in bytes
+    ///
+    /// May be `None` if the allocator has no limit.
     #[inline]
-    pub fn limit(&self) -> usize {
-        self.limit
+    pub fn limit(&self) -> Option<usize> {
+        if self.limit == usize::MAX {
+            None
+        } else {
+            Some(self.limit)
+        }
     }
     #[inline]
     pub fn into_inner(self) -> Bump {
@@ -316,5 +323,13 @@ impl Allocator {
     #[inline]
     pub fn remaining_bytes(&self) -> usize {
         self.limit - self.arena.allocated_bytes()
+    }
+}
+impl Debug for Allocator {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        f.debug_struct("Allocator")
+            .field("limit", &self.limit())
+            .field("allocated_bytes", &self.arena.allocated_bytes())
+            .finish()
     }
 }
