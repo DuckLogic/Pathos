@@ -176,13 +176,13 @@ impl Default for SeperatorParseState {
         SeperatorParseState::AwaitingStart
     }
 }
-pub trait EndFunc<'src, 'a> {
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
+pub trait EndFunc<'src, 'a, 'sym> {
+    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool;
     fn description(&self) -> &'static str;
 }
-impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
+impl<'src, 'a, 'sym> EndFunc<'src, 'a, 'sym> for Token<'a> {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool {
         match parser.peek() {
             Some(tk) => tk == *self,
             None => false
@@ -193,10 +193,10 @@ impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
         self.static_text().unwrap_or("ending")
     }
 }
-impl<'src, 'a, Func> EndFunc<'src, 'a> for Func 
-    where Func: FnMut(&Parser<'src, 'a>) -> bool {
+impl<'src, 'a, 'sym, Func> EndFunc<'src, 'a, 'sym> for Func
+    where Func: FnMut(&Parser<'src, 'a, 'sym>) -> bool {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'src, 'a, 'sym>) -> bool {
         (*self)(parser)
     }
     #[inline]
@@ -204,16 +204,16 @@ impl<'src, 'a, Func> EndFunc<'src, 'a> for Func
         "ending"
     }
 }
-pub trait IParser<'src, 'a>: Sized + Debug {
-    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
-    fn as_parser(&self) -> &Parser<'src, 'a>;
+pub trait IParser<'src, 'a, 'sym>: Sized + Debug {
+    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a, 'sym>;
+    fn as_parser(&self) -> &Parser<'src, 'a, 'sym>;
     #[inline]
     fn parse_terminated<'p, T, F>(
         &'p mut self,
         sep: Token<'a>,
         ending: Token<'a>,
         parse_func: F
-    ) -> ParseSeperated<'p, 'src, 'a, Self, F, Token<'a>, T> 
+    ) -> ParseSeperated<'p, 'src, 'a, 'sym, Self, F, Token<'a>, T>
         where F: FnMut(&mut Self) -> Result<T, ParseError> {
         ParseSeperated::new(
             self, parse_func,
@@ -226,12 +226,13 @@ pub trait IParser<'src, 'a>: Sized + Debug {
 }
 #[derive(Debug)]
 pub struct ParseSeperated<
-    'p, 'src: 'p, 'a: 'p, P: IParser<'src, 'a>,
+    'p, 'src: 'p, 'a: 'p, 'sym: 'p,
+    P: IParser<'src, 'a, 'sym>,
     ParseFunc, E, T
 > {
     pub parser: &'p mut P,
     pub parse_func: ParseFunc,
-    pub seperator: Token<'a>,
+    pub separator: Token<'a>,
     pub end_func: E,
     pub state: SeperatorParseState,
     /// Allow an extra (redundant) separator
@@ -240,23 +241,24 @@ pub struct ParseSeperated<
     /// For example: `(a, b, c,)` has a redundant comma
     /// terminating the tuple.
     pub allow_terminator: bool,
-    pub marker: PhantomData<fn(&'src ()) -> T>,
+    pub marker: PhantomData<fn(&'src (), &'sym ()) -> T>,
 }
-impl<'p, 'src, 'a,
-    P: IParser<'src, 'a>,
+impl<'p, 'src, 'a, 'sym,
+    P: IParser<'src, 'a, 'sym>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a>, T
-> ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
+    E: EndFunc<'src, 'a, 'sym>, T
+> ParseSeperated<'p, 'src, 'a, 'sym, P, ParseFunc, E, T> {
     #[inline]
     fn new(
         parser: &'p mut P,
         parse_func: ParseFunc,
-        seperator: Token<'a>,
+        separator: Token<'a>,
         end_func: E,
         allow_terminator: bool,
     ) -> Self {
         ParseSeperated {
-            parser, parse_func, seperator,
+            parser, parse_func,
+            separator,
             end_func, state: SeperatorParseState::AwaitingStart,
             allow_terminator, marker: PhantomData,
         }
@@ -273,7 +275,7 @@ impl<'p, 'src, 'a,
         self.parser.as_parser().unexpected(
             &format_args!(
                 "Expected {:?} or {}",
-                self.seperator.static_text().unwrap_or("<sep>"),
+                self.separator.static_text().unwrap_or("<sep>"),
                 self.end_func.description()
             )
         )
@@ -289,11 +291,11 @@ impl<'p, 'src, 'a,
     }
 }
 
-impl<'p, 'src, 'a,
-    P: IParser<'src, 'a>,
+impl<'p, 'src, 'a, 'sym,
+    P: IParser<'src, 'a, 'sym>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a>, T
-> Iterator for ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
+    E: EndFunc<'src, 'a, 'sym>, T
+> Iterator for ParseSeperated<'p, 'src, 'a, 'sym, P, ParseFunc, E, T> {
     type Item = Result<T, ParseError>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -332,7 +334,7 @@ impl<'p, 'src, 'a,
                 SeperatorParseState::AwaitingSeperator => {
                     let parser = self.parser.as_mut_parser();
                     match parser.peek() {
-                        Some(tk) if tk == self.seperator => {
+                        Some(tk) if tk == self.separator => {
                             match parser.skip() {
                                 Ok(_) => {},
                                 Err(e) => return Some(Err(e))
@@ -373,7 +375,7 @@ impl<'p, 'src, 'a,
 
 #[derive(educe::Educe)]
 #[educe(Debug)]
-pub struct Parser<'src, 'a> {
+pub struct Parser<'src, 'a, 'sym> {
     #[educe(Debug(ignore))]
     arena: &'a Allocator,
     /// The buffer of look-ahead, containing
@@ -391,10 +393,10 @@ pub struct Parser<'src, 'a> {
     ///
     /// To consume the first token, use [VecDeque::pop_back].
     buffer: VecDeque<SpannedToken<'a>>,
-    lexer: PythonLexer<'src, 'a>,
+    lexer: PythonLexer<'src, 'a, 'sym>,
 }
-impl<'src, 'a> Parser<'src, 'a> {
-    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
+impl<'src, 'a, 'sym> Parser<'src, 'a, 'sym> {
+    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a, 'sym>) -> Result<Self, ParseError> {
         let mut res = Parser {
             lexer, buffer: VecDeque::with_capacity(1), arena
         };

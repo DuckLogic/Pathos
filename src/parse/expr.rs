@@ -676,7 +676,7 @@ mod test {
     use pretty_assertions::assert_eq;
     use crate::ast::tree::{Expr, ExprContext, ExprKind, Operator, Unaryop};
     use crate::ParseMode;
-    use crate::ast::{Span, Ident, Constant, RawIdent};
+    use crate::ast::{Span, Ident, Constant};
     use crate::ast::constants::ConstantPool;
     use crate::{ident, expr};
     use crate::{vec, count_exprs};
@@ -685,11 +685,12 @@ mod test {
     use crate::parse::ExprPrec;
     use crate::ast::tree::ExprKind::UnaryOp;
     use hashbrown::HashMap;
+    use crate::ast::ident::SymbolTable;
 
     struct TestContext<'a, 'p> {
         arena: &'a Allocator,
         pool: &'p mut ConstantPool<'a>,
-        ident_pool: HashMap<&'static str, &'a RawIdent<'a>>
+        symbol_table: &'p SymbolTable<'a>
     }
     impl<'a, 'p> TestContext<'a, 'p> {
         fn int(&mut self, i: i64) -> Expr<'a> {
@@ -698,9 +699,10 @@ mod test {
         }
         fn ident(&mut self, s: &'static str) -> Ident<'a> {
             let arena = self.arena;
-            Ident::from_raw(DUMMY, self.ident_pool.entry(s)
-                .or_insert_with(|| arena.alloc(RawIdent::from_static_text(s)).unwrap()))
-                .unwrap()
+            Ident {
+                symbol: self.symbol_table.alloc(s).unwrap(),
+                span: DUMMY
+            }
         }
         fn constant(&self, value: Constant<'a>) -> Expr<'a> {
             self.arena.alloc(ExprKind::Constant {

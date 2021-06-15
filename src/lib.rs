@@ -16,6 +16,7 @@ mod parse;
 mod unicode_names;
 
 pub use self::parse::parser::ParseError;
+use crate::ast::ident::SymbolTable;
 
 /// The mode of operation to parse the code in
 ///
@@ -29,14 +30,11 @@ pub fn parse<'a, 'src>(
     arena: &'a Allocator,
     text: &'src str,
     mode: ParseMode,
-    pool: &mut ConstantPool<'a>
+    pool: &mut ConstantPool<'a>,
+    symbol_table: &mut SymbolTable<'a>
 ) -> Result<ast::tree::Mod<'a>, ParseError> {
-    let lexer = PythonLexer::new(arena, text);
-    let mut parser = PythonParser::new(
-        arena,
-        Parser::new(arena, lexer)?,
-        pool
-    );
+    let lexer = PythonLexer::new(arena, symbol_table, text);
+    let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool, );
     match mode {
         ParseMode::Expression => {
             let res = parser.expression()?;

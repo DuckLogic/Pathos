@@ -105,6 +105,7 @@ use logos::{Logos, Lexer};
 
 use crate::ast::Span;
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
+use crate::ast::ident::{SymbolTable, Symbol};
 
 /// A python identifier
 ///
@@ -203,15 +204,15 @@ impl From<StringError> for LexError {
     }
 }
 
-pub struct PythonLexer<'src, 'arena> {
+pub struct PythonLexer<'src, 'arena, 'sym> {
     arena: &'arena Allocator,
     raw_lexer: Lexer<'src, RawToken<'src>>,
-    known_idents: hashbrown::HashMap<&'src str, &'arena Ident<'arena>>,
+    symbol_table: &'sym mut SymbolTable<'arena>,
     pending_indentation_change: isize,
     indent_stack: Vec<usize>,
     starting_line: bool,
 }
-impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
+impl<'src, 'arena, 'sym> Debug for PythonLexer<'src, 'arena, 'sym> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         let span = self.current_span();
         let slice = self.raw_lexer.slice();
@@ -235,12 +236,12 @@ macro_rules! translate_tokens {
     (handler for $name:ident $(( $mtch:ident ) )? => $handler:expr) => ($handler);
     (handler for $name:ident) => (Token::$name);
 }
-impl<'src, 'arena> PythonLexer<'src, 'arena> {
-    pub fn new(arena: &'arena Allocator, text: &'src str) -> Self {
+impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena, 'sym> {
+    pub fn new(arena: &'arena Allocator, symbol_table: &'sym mut SymbolTable<'arena>, text: &'src str) -> Self {
         PythonLexer {
             arena,
             raw_lexer: RawToken::lexer(text),
-            known_idents: ::hashbrown::HashMap::default(),
+            symbol_table,
             pending_indentation_change: 0,
             indent_stack: vec![0],
             starting_line: true
@@ -266,20 +267,8 @@ impl<'src, 'arena> PythonLexer<'src, 'arena> {
         let raw = self.raw_lexer.span();
         Span { start: raw.start, end: raw.end }
     }
-    pub fn create_ident(&mut self, text: &'src str) -> Result<&'arena Ident<'arena>, AllocError> {
-        Ok(match self.known_idents.entry(text) {
-            hashbrown::hash_map::Entry::Occupied(entry) => {
-                *entry.get()
-            },
-            hashbrown::hash_map::Entry::Vacant(entry) => {
-                let allocated_text = self.arena.alloc_str(text)?;
-                let allocated = self.arena.alloc(Ident {
-                    text: allocated_text
-                })?;
-                entry.insert(allocated);
-                allocated
-            }
-        })
+    pub fn create_ident(&mut self, text: &'src str) -> Result<Symbol<'arena>, AllocError> {
+        self.symbol_table.alloc(text)
     }
     #[allow(unused)]
     pub fn next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
@@ -627,7 +616,7 @@ pub enum Token<'arena> {
     ///
     /// Do not confuse this with [Token::IncreaseIndent].
     /// This has the shorter name because it is more common.
-    Ident(&'arena Ident<'arena>),
+    Ident(Symbol<'arena>),
     /// Increase the indentation
     IncreaseIndent,
     /// Decrease the indentation
@@ -1362,7 +1351,8 @@ mod test {
     macro_rules! test_lex {
         ($text:expr, $($om:tt)*) => {{
             let arena = Allocator::new(Bump::new());
-            let mut lexer = PythonLexer::new(&arena, "");
+            let symbol_table = SymbolTable::new(&arena);
+            let mut lexer = PythonLexer::new(&arena, &mut symbol_table, "");
             let mut res = Vec::new();
             munch_token!(lexer, res; $($om)*);
             assert_eq!(

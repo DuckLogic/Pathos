@@ -6,10 +6,12 @@ use std::hash::{Hash, Hasher};
 mod macros;
 pub mod constants;
 pub mod tree;
+pub mod ident;
 
 pub use self::constants::{Constant};
 use crate::alloc::AllocError;
 pub use crate::alloc::Allocator;
+pub use self::ident::Ident;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Span {
@@ -33,71 +35,6 @@ impl Debug for Span {
 impl Display for Span {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
-    }
-}
-pub type RawIdent<'a> = crate::lexer::Ident<'a>;
-#[derive(Copy, Clone)]
-pub struct Ident<'a> {
-    span: Span,
-    raw: &'a RawIdent<'a>
-}
-impl<'a> Ident<'a> {
-    #[inline]
-    pub fn from_raw(
-        span: Span,
-        raw: &'a RawIdent<'a>
-    ) -> Result<Self, AllocError> {
-        Ok(Ident { span, raw })
-    }
-    #[inline]
-    pub fn text(&self) -> &'a str {
-        self.raw.text()
-    }
-    #[inline]
-    pub fn as_raw(&self) -> &'a RawIdent<'a> {
-        self.raw
-    }
-}
-impl<'a> Deref for Ident<'a> {
-    type Target = str;
-    #[inline]
-    fn deref(&self) -> &str {
-        self.raw.text()
-    }
-}
-impl Debug for Ident<'_> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let text = self.text();
-        if text.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'_'
-        }) {
-            f.write_str(text)
-        } else {
-            write!(f, "Ident({:?})", text)
-        }
-    }
-}
-impl Display for Ident<'_> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        f.write_str(self.text())
-    }
-}
-impl PartialEq for Ident<'_> {
-    #[inline]
-    fn eq(&self, other: &Ident) -> bool {
-        self.as_raw() == other.as_raw()
-    }
-}
-impl Hash for Ident<'_> {
-    #[inline]
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_raw().hash(state)
-    }
-}
-impl Spanned for Ident<'_> {
-    #[inline]
-    fn span(&self) -> Span {
-        self.span
     }
 }
 

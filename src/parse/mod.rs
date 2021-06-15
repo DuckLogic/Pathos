@@ -1,6 +1,7 @@
 use crate::ast::constants::ConstantPool;
 use crate::ast::tree::ExprContext;
-use crate::ast::{Ident, Span, RawIdent};
+use crate::ast::Span;
+use crate::ast::ident::{Ident, Symbol, SymbolTable};
 
 use crate::lexer::Token;
 use self::parser::{ParseError, IParser, Parser};
@@ -16,20 +17,16 @@ mod expr;
 #[derive(Debug)]
 pub struct PythonParser<'src, 'a, 'p> {
     pub arena: &'a Allocator,
-    pub parser: Parser<'src, 'a>,
+    pub parser: Parser<'src, 'a, 'p>,
     expression_context: ExprContext,
-    pub pool: &'p mut ConstantPool<'a>
+    pub pool: &'p mut ConstantPool<'a>,
 }
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
-    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a>, pool: &'p mut ConstantPool<'a>) -> Self {
+    pub fn new(arena: &'a Allocator, parser: Parser<'src, 'a, 'p>, pool: &'p mut ConstantPool<'a>) -> Self {
         PythonParser {
             arena, parser, pool,
             expression_context: Default::default(),
         }
-    }
-    #[inline]
-    pub fn convert_ident(&mut self, span: Span, raw: &'a RawIdent<'a>) -> Result<&'a Ident<'a>, ParseError> {
-        Ok(&*self.arena.alloc(Ident::from_raw(span, raw)?)?)
     }
     #[inline]
     pub fn parse_ident(&mut self) -> Result<&'a Ident<'a>, ParseError> {
@@ -41,13 +38,13 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         self.convert_ident(span, raw)
     }
 }
-impl<'src, 'a, 'p> IParser<'src, 'a> for PythonParser<'src, 'a, 'p> {
+impl<'src, 'a, 'p> IParser<'src, 'a, 'p> for PythonParser<'src, 'a, 'p> {
     #[inline]
-    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a> {
+    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a, 'p> {
         &mut self.parser
     }
     #[inline]
-    fn as_parser(&self) -> &Parser<'src, 'a> {
+    fn as_parser(&self) -> &Parser<'src, 'a, 'p> {
         &self.parser
     }
 }
