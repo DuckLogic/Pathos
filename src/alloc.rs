@@ -7,7 +7,7 @@ use std::ptr::{NonNull};
 
 use bumpalo::Bump;
 
-#[macro_export(internal)]
+#[macro_export(local_inner_macros)]
 macro_rules! count_exprs {
     () => (0);
     ($single:expr) => (1);
@@ -111,6 +111,7 @@ impl<'arena, T> Vec<'arena, T> {
                 new_memory.as_ptr() as *mut T,
                 self.len
             );
+            self.capacity = cap;
             self.ptr = new_memory.cast::<T>();
             Ok(())
         }

@@ -576,15 +576,15 @@ impl<'a> Spanned for ExprKind<'a> {
 }
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ExprContext {
-    Load=1,
-    Store=2,
-    Del=3,
+    Load,
+    Store,
+    Del,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum Boolop {
-    And=1,
-    Or=2,
+    And,
+    Or,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

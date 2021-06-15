@@ -72,7 +72,7 @@ class ConstantExpr(Expr):
         return repr(self.value)
 
 @dataclass
-class SExpr:
+class SExpr(Expr):
     op: str
     args: list[Expr]
 
@@ -106,6 +106,18 @@ class SExpr:
 
     def __str__(self):
         return f"({self.op} {' '.join(map(str, self.args))})"
+
+EXPR_CONTEXT_TABLE = {
+    ast.Load: "load"
+    ast.Del: "del",
+    ast.Store: "store"
+}
+def expr_context(ctx: ast.expr_context) -> Optional[str]:
+    assert isinstance(ctx, ast.expr_context)
+    if isinstance(ctx, ast.Load):
+        return None
+    else:
+        return EXPR_CONTEXT_TABLE[type(ctx)]
 
 OP_TABLE = {
     ast.Add: '+',
@@ -168,6 +180,13 @@ def _(expr: ast.UnaryOp) -> Expr:
 def _(expr: ast.UnaryOp) -> Expr:
     return SExpr(op(expr.op), [convert_expr(expr.operand)])
 
+@convert_expr.register()
+def _(expr: ast.Tuple) -> Expr:
+    if (ctx := convert_expr(expr.ctx)) is not None:
+        suffix = f"-{ctx}"
+    else:
+        suffix = ""
+    return SExpr(f"tuple{suffix}", [convert_expr(e) for e in expr.values])
 
 @convert_expr.register
 def _(expr: ast.BoolOp) -> Expr:

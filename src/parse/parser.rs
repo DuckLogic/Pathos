@@ -34,6 +34,12 @@ struct ParseErrorInner {
 #[derive(Debug)]
 pub struct ParseError(Box<ParseErrorInner>);
 impl ParseError {
+    /// Give additional context on the type of item that was "expected"
+    #[cold]
+    pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
+        self.0.expected = Some(msg.to_string());
+        self
+    }
     #[inline]
     pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
         ParseErrorBuilder(ParseErrorInner {

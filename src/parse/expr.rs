@@ -15,6 +15,7 @@ use super::{PythonParser};
 use crate::vec;
 use crate::alloc::{Allocator, AllocError, Vec};
 use std::ops::{Sub, Add};
+use std::fmt::Display;
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -107,6 +108,10 @@ pub enum ExprPrec {
 }
 impl ExprPrec {
     const MIN_PREC: ExprPrec = ExprPrec::from_int(0).unwrap();
+    /// The dummy expression precedence, used to parse target lists
+    ///
+    /// This is because target lists are currently implemented as expressions.
+    const TARGET_PREC: ExprPrec = ExprPrec::BitwiseOr;
     const fn from_int(val: u8) -> Option<Self> {
         if (val as usize) < std::mem::variant_count::<ExprPrec>() {
             Some(unsafe { std::mem::transmute::<u8, ExprPrec>(val) })
@@ -334,11 +339,72 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             span, kind, value: constant
         })?)
     }
-
-    fn parse_comprehension(
+    #[inline]
+    fn peek_is_comprehension(&self) -> bool {
+        matches!(self.parser.peek(), Some(Token::Async) | Some(Token::For))
+    }
+    fn parse_single_comprehension(
         &mut self,
     ) -> Result<Comprehension<'a>, ParseError> {
-        todo!()
+        let is_async = if let Some(Token::Async) = self.parser.peek() {
+            self.parser.skip()?;
+            true
+        } else { false };
+        self.parser.expect(Token::For)?;
+        let target = self.parse_target_list(
+            &mut |parser| parser.parser.peek() == Some(Token::In),
+            &"'in'"
+        )?;
+        self.parser.expect(Token::In)?;
+        // For the precedence of an iterator, we can have anything with higher precedence than a conditional
+        let iter = self.parse_prec(ExprPrec::Conditional + 1)?;
+        let mut ifs = Vec::new(self.arena);
+        while let Some(Token::If) = self.parser.peek() {
+            self.parser.skip()?; // Om nom nom
+            /*
+             * For the precedence of the condition in a comprehension expression,
+             * we can have anything higher than a conditional expression (since that would be nonsence).
+             * In other words it is illegal to have [e for e in l if (1 if e else 5)]
+             * without having the parantheses.
+             * NOTE: It is legal to parse these as two seperate if conditions.
+             */
+            ifs.push(self.parse_prec(ExprPrec::Conditional + 1)?)?;
+        }
+        Ok(Comprehension { iter, target, is_async, ifs: ifs.into_slice() })
+    }
+    /// Parses a list of target expressions,
+    /// until we see the ending identified by the specified closure.
+    ///
+    /// The closure is necessary to avoid backtracking.
+    ///
+    /// Implicitly converts a list to a tuple expression (with the appropriate [ExprContext])
+    fn parse_target_list(&mut self, should_end: &mut dyn FnMut(&Self) -> bool, expected_ending: &dyn Display) -> Result<Expr<'a>, ParseError> {
+        let first = self.parse_target()?;
+        if let Some(Token::Comma) = self.parser.peek() {
+            let start = first.span().start;
+            let mut v = vec![in self.arena; first]?;
+            while let Some(Token::Comma) = self.parser.peek() {
+                self.parser.skip()?;
+                if should_end(self) { break; }
+                v.push(self.parse_target().map_err(|err| {
+                    err.with_expected_msg(format_args!("either an expression or {}", expected_ending))
+                })?)?;
+            }
+            let end = v.last().unwrap().span().end;
+            Ok(&*self.arena.alloc(ExprKind::Tuple {
+                span: Span { start, end }, ctx: self.expression_context,
+                elts: v.into_slice()
+            })?)
+        } else {
+            Ok(first)
+        }
+    }
+    /// Parses a target expression
+    ///
+    /// This corresponds to "target" in the grammar (see the section on assignments):
+    /// https://docs.python.org/3.10/reference/simple_stmts.html#assignment-statements
+    fn parse_target(&mut self) -> Result<Expr<'a>, ParseError> {
+        self.parse_prec(ExprPrec::TARGET_PREC)
     }
 
     fn parentheses(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
@@ -368,12 +434,19 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         assert!(!collection_type.is_set());
         /*
          * NOTE: Tuples need special handling.
-         * because they are created by the *COMMA*
-         * operator and not by parentheses.
+         * because they are technically created by the *COMMA*
+         * operator and not by parentheses (at least according to the reference).
          *
-         * However in our parser, they are
-         * essentially implemented both ways.
-         * We start out parsing a `(expr...` as a 'tuple'.
+         * However, the places where an un-parenthesized tuple
+         * can become an expression are somewhat restricted,
+         * because comma-seperated lists can mean different things
+         * in different contexts.
+         * Therefore we just sprinkle some implicit tuple creation
+         * around without technically defining a 'comma operator'.
+         *
+         * Parenthesizes on the other hand, *do* create a tuple
+         * as long as there is more than one element inside.
+         * We start out parsing a `(expr ...` as a 'tuple'.
          * However, if there is only one element
          * and a closing paren without any comma
          * then it's clear the parens are for grouping only.
@@ -418,12 +491,15 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         } else {
             None
         };
-        if self.parser.peek() == Some(Token::For) {
+        if self.peek_is_comprehension() {
+            // NOTE: Comprehensions can be nested like so:
+            // [e1 * e2 for e1 in l1 for e2 in l2]
+            // This gives the product (or combinations) of l1 & l2
             let mut comprehensions = Vec::with_capacity(self.arena, 1)?;
-            while self.parser.peek() == Some(Token::For) {
-                comprehensions.push(self.parse_comprehension()?)?;
+            while self.peek_is_comprehension() {
+                comprehensions.push(self.parse_single_comprehension()?)?;
             }
-            let end = self.parser.expect(Token::CloseBracket)?.span.end;
+            let end = self.parser.expect(collection_type.closing_token())?.span.end;
             if collection_type.is_dict() {
                 Ok(&*self.arena.alloc(ExprKind::DictComp {
                     span: Span { start, end },
@@ -574,11 +650,12 @@ mod test {
     use crate::alloc::{Allocator, AllocError};
     use bumpalo::Bump;
     use pretty_assertions::assert_eq;
-    use crate::ast::tree::{Expr, ExprKind, Operator, Unaryop};
+    use crate::ast::tree::{Expr, ExprContext, ExprKind, Operator, Unaryop};
     use crate::ParseMode;
     use crate::ast::{Span, Constant};
     use crate::ast::constants::ConstantPool;
     use crate::{ident, expr};
+    use crate::{vec, count_exprs};
     use std::error::Error;
     use std::backtrace::Backtrace;
     use crate::parse::ExprPrec;
@@ -696,6 +773,13 @@ mod test {
             op: Operator::Pow, right: expr!(ctx, Expr::BinOp {
                 span: DUMMY, left: ctx.int(2), op: Operator::Pow, right: ctx.int(3)
             })
+        })))
+    }
+    #[test]
+    fn collections() {
+        test_expr("[1, 2, 3]", |ctx| Ok(expr!(ctx, Expr::List {
+            span: DUMMY, elts: vec![in ctx.arena; ctx.int(1), ctx.int(2), ctx.int(3)].unwrap().into_slice(),
+            ctx: ExprContext::Load
         })))
     }
 }
