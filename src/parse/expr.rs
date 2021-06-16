@@ -23,6 +23,13 @@ struct PrefixParser<'src, 'a, 'p> {
         parser: &mut PythonParser<'src, 'a, 'p>,
         token: &SpannedToken<'a>
     ) -> Result<Expr<'a>, ParseError>,
+    prec: ExprPrec
+}
+impl<'src, 'a, 'p> PrefixParser<'src, 'a, 'p> {
+    #[inline]
+    fn atom(func: fn(parser: &mut PythonParser<'src, 'a, 'p>, token: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError>) -> Self {
+        PrefixParser { func, prec: ExprPrec::Atom }
+    }
 }
 struct InfixParser<'src, 'a, 'p> {
     func: fn(
@@ -159,7 +166,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let token = self.parser.peek_tk();
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
-            (Some(tk), Some(parser)) => {
+            (Some(tk), Some(parser)) if parser.prec >= min_prec => {
                 self.parser.skip()?;
                 (parser.func)(&mut *self, &tk)?
             },
@@ -185,13 +192,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
     }
     fn prefix_parser(token: &Token<'a>) -> Option<PrefixParser<'src, 'a, 'p>> {
-        let func = match *token {
-            Token::Ident(_) => Self::name,
+        let atom = PrefixParser::atom;
+        Some(match *token {
+            Token::Ident(_) => atom(Self::name),
             Token::True | Token::False |
             Token::None | Token::StringLiteral(_) |
             Token::IntegerLiteral(_) |
             Token::BigIntegerLiteral(_) |
-            Token::FloatLiteral(_) => Self::constant,
+            Token::FloatLiteral(_) => atom(Self::constant),
             /*
              * For constructing a list, a set or a dictionary
              * Python provides special syntax called “displays”,
@@ -200,14 +208,18 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              * - they are computed via a set of looping and filtering
              *   instructions, called a comprehension.
              */
-            Token::OpenBracket => Self::list_display,
-            Token::OpenParen => Self::parentheses,
-            Token::OpenBrace => Self::dict_display,
+            Token::OpenBracket => atom(Self::list_display),
+            Token::OpenParen => atom(Self::parentheses),
+            Token::OpenBrace => atom(Self::dict_display),
             Token::BitwiseInvert | Token::Not |
-            Token::Plus | Token::Minus => Self::unary_op,
+            Token::Plus | Token::Minus => {
+                PrefixParser {
+                    func: Self::unary_op,
+                    prec: ExprPrec::Unary
+                }
+            },
             _ => return None
-        };
-        Some(PrefixParser { func })
+        })
     }
     fn infix_parser(token: &Token<'a>) -> Option<InfixParser<'src, 'a, 'p>> {
         Some(match *token {
