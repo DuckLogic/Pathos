@@ -1,8 +1,124 @@
+from contextlib import contextmanager
 from functools import singledispatch
 import ast
 from dataclasses import dataclass
 from abc import ABCMeta, abstractmethod
-from typing import Union
+from typing import Union, Optional
+
+import sys
+
+ConstantType = Union[str, bool, int, float, None]
+
+COLLECTION_CHAR_MAP = {
+    dict: ('{', '}'),
+    list: ('[', ']'),
+    tuple: ('(', ')')
+}
+class PrettyDumper:
+    def __init__(self, indent_size: int = 4):
+        self.lines = []
+        self._pending_line = []
+        self._current_indent = 0
+        self.indent_size = indent_size
+
+    @contextmanager
+    def indent(self):
+        self._current_indent += 1
+        yield
+        self._current_indent -= 1
+
+    def write_line(self, line: str = ""):
+        if '\n' in line:
+            self.write(line + '\n')
+            return
+        line = ''.join(self._pending_line) + line
+        self._pending_line.clear()
+        if line:
+            indent = ' ' * (self._current_indent * self.indent_size)
+            self.lines.append(indent + line)
+        else:
+            self.lines.append("")
+
+    def write(self, text: str):
+        if '\n' in text:
+            if self._pending_line:
+                text = ''.join(self._pending_line) + text
+                self._pending_line.clear()
+            index = 0
+            while (next_newline := text.find('\n', index)) >= 0:
+                self.write_line(text[index:next_newline])
+                index = next_newline + 1
+            if index < len(text):
+                self._pending_line.append(text[index:])
+        else:
+            self._pending_line.append(text)
+
+    def pretty_dump(
+            self, node: Union[ast.AST, list, tuple, ConstantType], *, newline: bool = False,
+            actually_object: bool = False
+    ):
+        if isinstance(node, (ast.operator, ast.unaryop, ast.boolop, ast.cmpop)):
+            self.write(repr(OP_TABLE[type(node)]))
+        elif isinstance(node, ast.expr_context):
+            self.write(repr(EXPR_CONTEXT_TABLE[type(node)]))
+        elif isinstance(node, ast.Constant):
+            self.write(repr(node.value))
+        elif isinstance(node, ast.AST):
+            field_names = node._fields
+            self.write(type(node).__name__)
+            data = {name: getattr(node, name) for name in field_names}
+            self.pretty_dump(data, actually_object=True)
+        elif isinstance(node, (dict, list, tuple)):
+            opening_char, closing_char = COLLECTION_CHAR_MAP[type(node)]
+            if actually_object:
+                self.write('(')
+            else:
+                self.write(opening_char)
+            if len(node) in (0, 1):
+                # Single line
+                if isinstance(node, dict):
+                    for key, val in node.items():
+                        if actually_object:
+                            self.write(str(key))
+                            self.write('=')
+                        else:
+                            self.pretty_dump(key)
+                            self.write(': ')
+                        self.pretty_dump(val)
+                else:
+                    for val in node:
+                        self.pretty_dump(val)
+            else:
+                # Split across multiple lines
+                self.write_line()
+                with self.indent():
+                    if isinstance(node, dict):
+                        for key, val in node.items():
+                            if actually_object:
+                                self.write(key)
+                                self.write('=')
+                            else:
+                                self.pretty_dump(key)
+                                self.write(': ')
+                            self.pretty_dump(val)
+                            self.write_line(',')
+                    else:
+                        for val in node:
+                            self.pretty_dump(val)
+                            self.write_line(',')
+            if actually_object:
+                self.write(')')
+            else:
+                self.write(closing_char)
+        else:
+            self.write(repr(node))
+        # Either way, consider writing a newline
+        if newline:
+            self.write_line()
+
+    def __str__(self):
+        res = '\n'.join(self.lines)
+        return res + ''.join(self._pending_line)
 
 
 class PrettyPrinter:
@@ -10,6 +126,7 @@ class PrettyPrinter:
     indent_size: int
     current_line: list[str]
     lines: list[str]
+
     def __init__(self, *, maximum_length: int = 100, indent_size: int = 4):
         self.maximum_length = maximum_length
         self.indent_size = indent_size
@@ -108,7 +225,7 @@ class SExpr(Expr):
         return f"({self.op} {' '.join(map(str, self.args))})"
 
 EXPR_CONTEXT_TABLE = {
-    ast.Load: "load"
+    ast.Load: "load",
     ast.Del: "del",
     ast.Store: "store"
 }
@@ -150,7 +267,7 @@ OP_TABLE = {
     ast.UAdd: '+',
     ast.USub: '-'
 }
-def op(op: Union[ast.operator, ast.unaryop, ast.boolop]):
+def op(op: Union[ast.operator, ast.unaryop, ast.boolop, ast.cmpop]):
     try:
         return OP_TABLE[type(op)]
     except KeyError:
@@ -180,7 +297,7 @@ def _(expr: ast.UnaryOp) -> Expr:
 def _(expr: ast.UnaryOp) -> Expr:
     return SExpr(op(expr.op), [convert_expr(expr.operand)])
 
-@convert_expr.register()
+@convert_expr.register
 def _(expr: ast.Tuple) -> Expr:
     if (ctx := convert_expr(expr.ctx)) is not None:
         suffix = f"-{ctx}"
