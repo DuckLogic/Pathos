@@ -1,6 +1,6 @@
 use std::backtrace::Backtrace;
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Debug};
 use std::fmt;
 
 use crate::alloc::AllocError;
@@ -30,7 +30,6 @@ struct ParseErrorInner {
     backtrace: Backtrace
 }
 
-#[derive(Debug)]
 pub struct ParseError(Box<ParseErrorInner>);
 impl ParseError {
     /// Give additional context on the type of item that was "expected"
@@ -46,6 +45,11 @@ impl ParseError {
             expected: None, actual: None,
             backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
         })
+    }
+    /// The span of this error, if any
+    #[inline]
+    pub fn span(&self) -> Option<Span> {
+        self.0.span
     }
 }
 impl From<AllocError> for ParseError {
@@ -68,7 +72,19 @@ impl From<AllocError> for ParseError {
         }))
     }
 }
-
+impl Debug for ParseError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut debug = f.debug_struct("ParseError");
+        if let Some(span) = self.0.span {
+            debug.field("span", &format_args!("{}", span));
+        }
+        debug.field("expected", &self.0.expected)
+            .field("actual", &self.0.actual)
+            .field("kind", &self.0.kind)
+            .field("backtrace", &format_args!("{}", self.0.backtrace))
+            .finish()
+    }
+}
 impl Display for ParseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self.0.kind {

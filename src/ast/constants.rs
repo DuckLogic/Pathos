@@ -366,6 +366,16 @@ pub struct StringStyle {
     pub raw: bool,
     pub quote_style: QuoteStyle
 }
+impl StringStyle {
+    #[inline]
+    pub const fn double_quote() -> Self {
+        StringStyle {
+            prefix: None,
+            raw: false,
+            quote_style: QuoteStyle::Double
+        }
+    }
+}
 
 /// The prefix for a string
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]

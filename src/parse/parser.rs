@@ -113,7 +113,7 @@ impl<'p, 'src, 'a,
     E: EndFunc<'src, 'a>, T
 > ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     #[inline]
-    fn new(
+    pub fn new(
         parser: &'p mut P,
         parse_func: ParseFunc,
         separator: Token<'a>,
@@ -411,12 +411,22 @@ impl<'src, 'a> Parser<'src, 'a> {
     //
     // Utilities
     //
-    #[inline]
     pub fn expect(&mut self, expected: Token<'a>)  -> Result<SpannedToken<'a>, ParseError> {
         self.expect_if(
             &expected.static_text().unwrap(),
             |actual| **actual == expected
         )
+    }
+    pub fn expect_end(&self)  -> Result<(), ParseError> {
+        match self.peek() {
+            None => Ok(()),
+            Some(tk) => {
+                Err(ParseError::builder(self.current_span(), ParseErrorKind::UnexpectedToken)
+                    .expected("end of input")
+                    .actual(tk)
+                    .build())
+            }
+        }
     }
     #[inline]
     pub fn expect_if(

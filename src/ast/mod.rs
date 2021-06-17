@@ -7,7 +7,7 @@ pub mod ident;
 pub use self::constants::{Constant};
 pub use crate::alloc::Allocator;
 pub use self::ident::Ident;
-use crate::ast::tree::{ExprKind, Expr, ExprContext};
+use crate::ast::tree::{ExprKind, Expr};
 use crate::alloc::AllocError;
 
 #[derive(Copy, Clone, PartialEq, Eq)]

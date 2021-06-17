@@ -731,25 +731,33 @@ impl<'a> Spanned for ExceptHandler<'a> {
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct Arguments<'a> {
-    pub posonlyargs: &'a [Arg<'a>],
-    pub args: &'a [Arg<'a>],
+    pub positional_args: &'a [Arg<'a>],
     pub vararg: Option<&'a Arg<'a>>,
-    pub kwonlyargs: &'a [Arg<'a>],
-    pub kw_defaults: &'a [Expr<'a>],
-    pub kwarg: Option<&'a Arg<'a>>,
-    pub defaults: &'a [Expr<'a>],
+    pub keyword_args: &'a [Arg<'a>],
+    pub keyword_vararg: Option<&'a Arg<'a>>,
 }
 
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct Arg<'a> {
-    pub arg: Ident<'a>,
+    pub name: Ident<'a>,
     pub annotation: Option<Expr<'a>>,
     pub type_comment: Option<&'a str>,
+    pub default_value: Option<Expr<'a>>,
+    pub style: ArgumentStyle,
     #[educe(Hash(ignore))]
     #[educe(PartialEq(ignore))]
     pub span: Span,
 }
+#[derive(PartialEq, Eq, Hash, Debug, Copy, Clone)]
+pub enum ArgumentStyle {
+    Positional,
+    PositionalOnly,
+    Vararg,
+    Keyword,
+    KeywordVararg
+}
+
 impl<'a> Spanned for Arg<'a> {
     #[inline]
     fn span(&self) -> Span {
