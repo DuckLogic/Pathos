@@ -46,7 +46,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     ///
     /// This corresponds to the "parameter_list" in the grammar of function definitions:
     /// <https://docs.python.org/3.10/reference/compound_stmts.html#function-definitions>
-    pub fn parse_argument_declarations(&mut self, ending_token: Token<'a>) -> Result<&'a Arguments<'a>, ParseError>{
+    pub fn parse_argument_declarations(&mut self, ending_token: Token<'a>, opts: ArgumentParseOptions) -> Result<&'a Arguments<'a>, ParseError>{
         use crate::alloc::Vec;
         let mut positional_args = Vec::new(self.arena);
         let mut keyword_args = Vec::new(self.arena);
@@ -67,7 +67,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
          * This 'mode' of parsing indicates whether or not
          * default arguments are optional, forbidden, or required.
          */
-        let mut current_mode = ArgumentParseMode::Standard;
+        let mut current_default_handling = DefaultArgumentHandling::Standard;
         /// Give a good error message depending on our current state (or rather, current ArgumentStyle)
         #[cold]
         fn unexpected_item_msg<'a>(current_style: ArgumentStyle, ending_token: &Token<'a>) -> Box<str> {
@@ -113,7 +113,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                              * Switch to allow non-default args once again
                              * This is needed in case we were previously in the 'require defaults' mode.
                              */
-                            current_mode = ArgumentParseMode::Standard
+                            current_default_handling = DefaultArgumentHandling::Standard
                         }
                         ArgumentStyle::Keyword => {
                             let is_vararg_declaration = matches!(
@@ -140,9 +140,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                         Some(Token::Ident(_)) => {
                             assert_eq!(vararg, None, "Already parsed a vararg");
                             vararg = Some(&*self.arena.alloc(self.parse_single_argument_declaration(
-                                &ArgumentParseMode::ForbidDefaults {
+                                &DefaultArgumentHandling::ForbidDefaults {
                                     reason: "for vararg parameter"
-                                },
+                                }, opts,
                                 ArgumentStyle::Vararg
                             )?)?);
                             // Fallthrough to comma/closing
@@ -169,10 +169,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 Some(Token::DoubleStar) => {
                     self.parser.skip()?;
                     keyword_vararg = Some(&*self.arena.alloc(self.parse_single_argument_declaration(
-                        &ArgumentParseMode::ForbidDefaults {
+                        &DefaultArgumentHandling::ForbidDefaults {
                             reason: "for keyword vararg parameter"
                         },
-                        ArgumentStyle::KeywordVararg
+                        opts, ArgumentStyle::KeywordVararg
                     )?)?);
                     break 'argParsing;
                 }
@@ -180,7 +180,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     break 'argParsing;
                 }
                 _ => {
-                    let arg = match self.parse_single_argument_declaration(&current_mode, current_style) {
+                    let arg = match self.parse_single_argument_declaration(&current_default_handling, opts, current_style) {
                         Ok(arg) => arg,
                         Err(e) => {
                             return Err(e.with_expected_msg(unexpected_item_msg(current_style, &ending_token)))
@@ -189,7 +189,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     match current_style {
                         ArgumentStyle::Positional | ArgumentStyle::PositionalOnly => {
                             if arg.default_value.is_some() {
-                                current_mode = ArgumentParseMode::RequireDefaults {
+                                current_default_handling = DefaultArgumentHandling::RequireDefaults {
                                     first_arg_with_default: arg.name.symbol
                                 }
                             }
@@ -227,14 +227,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// This accepts an [ArgumentParseMode] to control the specifics of parsing.
     ///
     /// In the grammar of function
-    fn parse_single_argument_declaration(&mut self, mode: &ArgumentParseMode, style: ArgumentStyle) -> Result<Arg<'a>, ParseError> {
+    fn parse_single_argument_declaration(&mut self, default_mode: &DefaultArgumentHandling, opts: ArgumentParseOptions, style: ArgumentStyle) -> Result<Arg<'a>, ParseError> {
         let name = self.parse_ident().map_err(|parser| parser.with_expected_msg("An argument declaration"))?;
         let start = name.span.start;
         let mut end = name.span.end;
         let mut default_value = None;
         let mut type_annotation = None;
         match self.parser.peek() {
-            Some(Token::Colon) => {
+            Some(Token::Colon) if opts.allow_type_annotations => {
                 self.parser.skip()?;
                 type_annotation = Some(self.expression()?);
                 end = type_annotation.unwrap().span().end;
@@ -253,14 +253,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
         }
         if let Some(Token::Equals) = self.parser.peek() {
-            if let ArgumentParseMode::ForbidDefaults { reason } = mode {
+            if let DefaultArgumentHandling::ForbidDefaults { reason } = default_mode {
                 return Err(self.parser.unexpected(&format_args!("Forbidden default argument {}", reason)));
             } else {
                 self.parser.expect(Token::Equals)?;
                 default_value = Some(self.expression()?);
                 end = default_value.unwrap().span().end;
             }
-        } else if let ArgumentParseMode::RequireDefaults { first_arg_with_default } = mode {
+        } else if let DefaultArgumentHandling::RequireDefaults { first_arg_with_default } = default_mode {
             return Err(self.parser.unexpected(&format_args!(
                 "Default argument required because {} had a default arg",
                 first_arg_with_default
@@ -289,9 +289,21 @@ impl Default for ExprContext {
         ExprContext::Load
     }
 }
+#[derive(Copy, Clone, Debug)]
+pub struct ArgumentParseOptions {
+    pub allow_type_annotations: bool
+}
+impl Default for ArgumentParseOptions {
+    #[inline]
+    fn default() -> Self {
+        ArgumentParseOptions {
+            allow_type_annotations: true
+        }
+    }
+}
 #[derive(Clone, educe::Educe)]
 #[educe(Debug)]
-enum ArgumentParseMode<'a> {
+enum DefaultArgumentHandling<'a> {
     Standard,
     /// Forbid a default value for the argument
     ForbidDefaults {
@@ -303,10 +315,10 @@ enum ArgumentParseMode<'a> {
         first_arg_with_default: Symbol<'a>
     }
 }
-impl Default for ArgumentParseMode<'_> {
+impl Default for DefaultArgumentHandling<'_> {
     #[inline]
     fn default() -> Self {
-        ArgumentParseMode::Standard
+        DefaultArgumentHandling::Standard
     }
 }
 
@@ -443,7 +455,7 @@ pub mod test {
         let raw_parser = Parser::new(&arena, lexer).unwrap();
         let mut parser = PythonParser::new(&arena, raw_parser, &mut pool);
         parser.parser.expect(Token::OpenParen).unwrap();
-        let res = parser.parse_argument_declarations(Token::CloseParen).unwrap();
+        let res = parser.parse_argument_declarations(Token::CloseParen, ArgumentParseOptions::default()).unwrap();
         parser.parser.expect(Token::CloseParen).unwrap();
         parser.parser.expect_end().unwrap();
         assert!(symbol_table.is_none());

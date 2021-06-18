@@ -17,6 +17,7 @@ use crate::vec;
 
 use super::parser::{IParser, SpannedToken};
 use super::PythonParser;
+use crate::parse::ArgumentParseOptions;
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -246,7 +247,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     fn lambda(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let start = tk.span.start;
         assert_eq!(tk.kind, Token::Lambda);
-        let args = self.parse_argument_declarations(Token::Colon)?;
+        let args = self.parse_argument_declarations(Token::Colon, ArgumentParseOptions {
+            allow_type_annotations: false
+        })?;
         self.parser.expect(Token::Colon)?;
         let body = self.expression()?;
         Ok(&*self.arena.alloc(ExprKind::Lambda {
@@ -701,10 +704,8 @@ mod test {
     use crate::ast::ident::SymbolTable;
     use crate::ast::tree::*;
     use crate::parse::ExprPrec;
-    use crate::parse::test::TestContext;
+    use crate::parse::test::{DUMMY, TestContext};
     use crate::ParseMode;
-
-    use super::super::test::DUMMY;
 
     macro_rules! vec {
         ($ctx:expr) => (vec![$ctx,]);
@@ -888,5 +889,30 @@ mod test {
         test_expr("{a: b, c: d}", |ctx| Ok(ctx.expr(ExprKind::Dict {
             span: DUMMY, elements: vec!(ctx, (ctx.name("a"), ctx.name("b")), (ctx.name("c"), ctx.name("d")))
         })));
+    }
+    #[test]
+    fn lambdas() {
+        test_expr("lambda a, b: a + b", |ctx| Ok(ctx.expr(ExprKind::Lambda {
+            span: DUMMY, args: ctx.arena.alloc(ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", None),
+                ctx.simple_arg("b", None)
+            )))?,
+            body: ctx.bin_op(ctx.name("a"), Operator::Add, ctx.name("b"))
+        })));
+        /*
+         * Believe it or not, lambdas can actually have default arguments,
+         * varargs, and even positional-only specifiers.
+         */
+        test_expr("lambda a, /, b, *items, c=3: a + c", |ctx| Ok(ctx.expr(ExprKind::Lambda {
+            span: DUMMY, args: ctx.arena.alloc(ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", None),
+                ctx.arg("b", None, None, ArgumentStyle::PositionalOnly),
+                ctx.arg("items", None, None, ArgumentStyle::Vararg),
+                ctx.keyword_arg("c", None, Some(ctx.int(3)))
+            )))?,
+            body: ctx.bin_op(ctx.name("a"), Operator::Add, ctx.name("c"))
+        })))
     }
 }
