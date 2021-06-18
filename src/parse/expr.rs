@@ -275,6 +275,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::Comparisons,
                 func: Self::binary_comparison
             },
+            Token::If => InfixParser {
+                prec: ExprPrec::Conditional,
+                func: Self::conditional_expr
+            },
             _ => return None
         })
     }
@@ -361,6 +365,17 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let value = self.expression()?;
         Ok(&*self.arena.alloc(ExprKind::NamedExpr {
             target: left, value, span: Span { start: left.span().start, end: value.span().end }
+        })?)
+    }
+    fn conditional_expr(&mut self, body: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::If);
+        let condition = self.expression()?;
+        self.parser.expect(Token::Else)?;
+        let else_value = self.expression()?;
+        Ok(&*self.arena.alloc(ExprKind::IfExp {
+            span: Span { start: body.span().start, end: else_value.span().end },
+            test: condition,
+            body, or_else: else_value
         })?)
     }
     fn parse_cmp_op(&mut self, first: &SpannedToken<'a>, already_ate_first: bool) -> Result<Option<ComparisonOp>, ParseError> {
@@ -1196,6 +1211,15 @@ mod test {
         test_expr("a not in b", |ctx| Ok(ctx.expr(ExprKind::Compare {
             span: DUMMY, left: ctx.name("a"),
             comparators: vec!(ctx, (ComparisonOp::NotIn, ctx.name("b")))
+        })));
+    }
+    #[test]
+    fn conditionals() {
+        test_expr("a if cond else b", |ctx| Ok(ctx.expr(ExprKind::IfExp {
+            span: DUMMY,
+            body: ctx.name("a"),
+            test: ctx.name("cond"),
+            or_else: ctx.name("b")
         })));
     }
     #[test]
