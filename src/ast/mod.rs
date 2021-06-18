@@ -23,6 +23,14 @@ impl Span {
     pub const fn dummy() -> Span {
         Span { start: 0, end: 0 }
     }
+    /// Expand to include the other span
+    #[inline]
+    pub fn expand(&self, other: Span) -> Span {
+        Span {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end)
+        }
+    }
 }
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {

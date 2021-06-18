@@ -57,6 +57,11 @@ struct InfixParser<'src, 'a, 'p> {
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug)]
 #[repr(u8)]
 pub enum ExprPrec {
+    /// Specify that [PythonParser::parse_prec] has no limit to the minimum
+    /// precedence it can parse.
+    ///
+    /// This isn't actually a valid precedence.
+    NoLimit,
     /// Assignment expressions (name := val)
     Assignment,
     /// Lambdas `lambda foo: bar`
@@ -116,7 +121,6 @@ pub enum ExprPrec {
     Atom,
 }
 impl ExprPrec {
-    const MIN_PREC: ExprPrec = ExprPrec::from_int(0).unwrap();
     /// The dummy expression precedence, used to parse target lists
     ///
     /// This is because target lists are currently implemented as expressions.
@@ -152,7 +156,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     ///
     /// Parses anything regardless of precedence
     pub fn expression(&mut self) -> Result<Expr<'a>, ParseError> {
-        self.parse_prec(ExprPrec::MIN_PREC)
+        self.parse_prec(ExprPrec::NoLimit)
     }
     /// Parse an expression, accepting anything that has at least the specified precedence (or binding power)
     ///
@@ -165,7 +169,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// You would call parse_prec(*) with the `6 + 3` on your right.
     /// Since `+` has a lower precedence (less binding power) than the min_prec `+`,
     /// it would **NOT** be consumed.
-    fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
+    pub fn parse_prec(&mut self, min_prec: ExprPrec) -> Result<Expr<'a>, ParseError>{
         let token = self.parser.peek_tk();
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
@@ -259,6 +263,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::BooleanOr,
                 func: Self::binary_bool_op,
             },
+            Token::AssignOperator => InfixParser {
+                prec: ExprPrec::Assignment,
+                func: Self::assignment_expr
+            },
             _ => return None
         })
     }
@@ -274,7 +282,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     ///
     /// However, in certain cases the parens can be omitted:
     /// 1. When the single element of an expression-statement
-    /// 2. When it is the sole expression on the right hand side of an assignment statemenet.
+    /// 2. When it is the sole expression on the right hand side of an assignment statement.
     ///
     /// Therefore, we keep this function public to allow those two special-cases.
     ///
@@ -330,6 +338,22 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             };
             Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
         }
+    }
+    fn assignment_expr(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::AssignOperator);
+        match *left {
+            ExprKind::Name { .. } => {},
+            _ => {
+                return Err(ParseError::builder(left.span(), ParseErrorKind::InvalidToken)
+                    .expected("An identifier for `:=`")
+                    .actual("A more complicated expression")
+                    .build());
+            }
+        };
+        let value = self.expression()?;
+        Ok(&*self.arena.alloc(ExprKind::NamedExpr {
+            target: left, value, span: Span { start: left.span().start, end: value.span().end }
+        })?)
     }
     fn binary_bool_op(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError>{
         let op = BoolOp::from_token(&tk.kind).unwrap();
@@ -1340,5 +1364,23 @@ mod test {
                 ctx: ExprContext::Load
             }))
         });
+    }
+    #[test]
+    fn assignment_expr() {
+        test_expr("a := 2", |ctx| Ok(ctx.expr(ExprKind::NamedExpr {
+            target: ctx.name("a"),
+            value: ctx.int(2),
+            span: DUMMY
+        })));
+        // Assignment expressions have the lowest possible precedence
+        test_expr("5 + (a := 2)", |ctx| Ok(ctx.bin_op(
+            ctx.int(5),
+            Operator::Add,
+            ctx.expr(ExprKind::NamedExpr {
+                target: ctx.name("a"),
+                value: ctx.int(2),
+                span: DUMMY
+            })
+        )));
     }
 }
