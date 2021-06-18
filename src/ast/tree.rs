@@ -448,8 +448,7 @@ pub enum ExprKind<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         left: Expr<'a>,
-        ops: &'a [Cmpop],
-        comparators: &'a [Expr<'a>],
+        comparators: &'a [(ComparisonOp, Expr<'a>)],
     },
     Call {
         /// The span of the source
@@ -699,7 +698,7 @@ impl UnaryOp {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Cmpop {
+pub enum ComparisonOp {
     Eq,
     NotEq,
     Lt,
@@ -711,22 +710,49 @@ pub enum Cmpop {
     In,
     NotIn,
 }
-impl Cmpop {
+impl ComparisonOp {
+    #[inline]
+    pub fn from_token(tk: &Token) -> Result<Self, FromTokenError> {
+        Ok(match *tk {
+            Token::DoubleEquals => ComparisonOp::Eq,
+            Token::NotEquals => ComparisonOp::NotEq,
+            Token::LessThan => ComparisonOp::Lt,
+            Token::LessThanOrEqual => ComparisonOp::LtE,
+            Token::GreaterThan => ComparisonOp::Gt,
+            Token::GreaterThanOrEqual => ComparisonOp::GtE,
+            Token::In => ComparisonOp::In,
+            /*
+             * Could be 'is', 'is not', or 'not in'
+             * but we don't know anything for sure at this point
+             */
+            Token::Is | Token::Not => return Err(FromTokenError::Ambiguous),
+            _ => return Err(FromTokenError::CompletelyInvalid)
+        })
+    }
     #[inline]
     pub fn precedence(self) -> ExprPrec {
         match self {
-            Cmpop::Eq |
-            Cmpop::NotEq |
-            Cmpop::Lt |
-            Cmpop::LtE |
-            Cmpop::Gt |
-            Cmpop::GtE |
-            Cmpop::Is |
-            Cmpop::IsNot |
-            Cmpop::In |
-            Cmpop::NotIn => ExprPrec::Comparisons
+            ComparisonOp::Eq |
+            ComparisonOp::NotEq |
+            ComparisonOp::Lt |
+            ComparisonOp::LtE |
+            ComparisonOp::Gt |
+            ComparisonOp::GtE |
+            ComparisonOp::Is |
+            ComparisonOp::IsNot |
+            ComparisonOp::In |
+            ComparisonOp::NotIn => ExprPrec::Comparisons
         }
     }
+}
+#[derive(Copy, Clone, Debug)]
+pub enum FromTokenError {
+    /// Indicates that the list of provided tokens
+    /// is completely invalid (at least the start)
+    CompletelyInvalid,
+    /// Indicates that the list of provided tokens
+    /// is of insufficient length to make a conclusive determination
+    Ambiguous
 }
 
 #[derive(Educe, Debug, Clone)]

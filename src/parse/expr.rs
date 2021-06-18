@@ -267,6 +267,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::Assignment,
                 func: Self::assignment_expr
             },
+            Token::DoubleEquals | Token::NotEquals |
+            Token::LessThan | Token::LessThanOrEqual |
+            Token::GreaterThan | Token::GreaterThanOrEqual |
+            Token::In | Token::Not |
+            Token::Is => InfixParser {
+                prec: ExprPrec::Comparisons,
+                func: Self::binary_comparison
+            },
             _ => return None
         })
     }
@@ -353,6 +361,56 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let value = self.expression()?;
         Ok(&*self.arena.alloc(ExprKind::NamedExpr {
             target: left, value, span: Span { start: left.span().start, end: value.span().end }
+        })?)
+    }
+    fn parse_cmp_op(&mut self, first: &SpannedToken<'a>, already_ate_first: bool) -> Result<Option<ComparisonOp>, ParseError> {
+        match ComparisonOp::from_token(first) {
+            Ok(res) => {
+                if !already_ate_first {
+                    self.parser.skip()?;
+                }
+                Ok(Some(res))
+            },
+            Err(FromTokenError::CompletelyInvalid) => Ok(None),
+            Err(FromTokenError::Ambiguous) => {
+                if !already_ate_first {
+                    assert_eq!(self.parser.skip()?, first.kind);
+                }
+                match first.kind {
+                    Token::Is => {
+                        if self.parser.peek() == Some(Token::Not) {
+                            self.parser.skip()?;
+                            Ok(Some(ComparisonOp::IsNot))
+                        } else {
+                            Ok(Some(ComparisonOp::Is))
+                        }
+                    },
+                    Token::Not => {
+                        self.parser.expect(Token::In)?;
+                        Ok(Some(ComparisonOp::NotIn))
+                    },
+                    _ => unreachable!()
+                }
+            }
+        }
+    }
+    fn binary_comparison(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        let mut op = self.parse_cmp_op(tk, true)?.unwrap();
+        let start_index = tk.span.start;
+        let mut comparators = Vec::new(self.arena);
+        loop {
+            comparators.push((op, self.parse_prec(ExprPrec::Comparisons)?))?;
+            if let Some(Some(next_op)) = self.parser.peek_tk().map(|tk| self.parse_cmp_op(&tk, false)).transpose()? {
+                op = next_op;
+            } else {
+                break
+            }
+        }
+        assert!(!comparators.is_empty());
+        let end_index =comparators.last().unwrap().1.span().end;
+        Ok(&*self.arena.alloc(ExprKind::Compare {
+            comparators: comparators.into_slice(),
+            left, span: Span { start: start_index, end: end_index }
         })?)
     }
     fn binary_bool_op(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError>{
@@ -1119,7 +1177,26 @@ mod test {
                 )
             }
         )));
-
+    }
+    #[test]
+    fn compare_ops() {
+        test_expr("1 <= a > 3", |ctx| Ok(ctx.expr(ExprKind::Compare {
+            span: DUMMY,
+            left: ctx.int(1),
+            comparators: vec!(ctx, (ComparisonOp::LtE, ctx.name("a")), (ComparisonOp::Gt, ctx.int(3))),
+        })));
+        test_expr("a is None", |ctx| Ok(ctx.expr(ExprKind::Compare {
+            span: DUMMY, left: ctx.name("a"),
+            comparators: vec!(ctx, (ComparisonOp::Is, ctx.constant(ctx.pool.borrow_mut().none(DUMMY)?)))
+        })));
+        test_expr("a is not None", |ctx| Ok(ctx.expr(ExprKind::Compare {
+            span: DUMMY, left: ctx.name("a"),
+            comparators: vec!(ctx, (ComparisonOp::IsNot, ctx.constant(ctx.pool.borrow_mut().none(DUMMY)?)))
+        })));
+        test_expr("a not in b", |ctx| Ok(ctx.expr(ExprKind::Compare {
+            span: DUMMY, left: ctx.name("a"),
+            comparators: vec!(ctx, (ComparisonOp::NotIn, ctx.name("b")))
+        })));
     }
     #[test]
     fn collections() {
