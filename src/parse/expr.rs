@@ -20,6 +20,8 @@ use super::PythonParser;
 use crate::parse::ArgumentParseOptions;
 use crate::parse::parser::{EndFunc, ParseSeperated};
 use arrayvec::ArrayVec;
+use crate::ast::ident::Symbol;
+use std::cell::Cell;
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -259,6 +261,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::BooleanAnd,
                 func: Self::binary_bool_op
             },
+            Token::OpenParen => InfixParser {
+                prec: ExprPrec::Call,
+                func: Self::parse_call
+            },
             Token::Or => InfixParser {
                 prec: ExprPrec::BooleanOr,
                 func: Self::binary_bool_op,
@@ -427,6 +433,71 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             comparators: comparators.into_slice(),
             left, span: Span { start: start_index, end: end_index }
         })?)
+    }
+    fn parse_call(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::OpenParen);
+        let mut positional_args = Vec::new(self.arena);
+        let mut keyword_args = Vec::new(self.arena);
+        let mut keyword_varargs = None;
+        let first_keyword_arg_name: Cell<Option<Symbol<'a>>> = Cell::new(None);
+        let mut iter = self.parse_terminated(
+            Token::Comma, Token::CloseParen,
+            |parser| parser.parse_call_arg(first_keyword_arg_name.get())
+        );
+        loop {
+            match iter.next() {
+                Some(Ok(ParsedCallArg::Keyword(keyword))) => {
+                    if first_keyword_arg_name.get().is_none() {
+                        first_keyword_arg_name.set(Some(keyword.name.symbol));
+                    }
+                    keyword_args.push(keyword)?;
+                },
+                Some(Ok(ParsedCallArg::Positional(arg))) => {
+                    positional_args.push(arg)?;
+                },
+                Some(Ok(ParsedCallArg::KeywordVararg(expr))) => {
+                    keyword_varargs = Some(expr);
+                    break;
+                }
+                Some(Err(err)) => return Err(err),
+                None => break
+            }
+        }
+        let start = left.span().start;
+        let end = self.parser.current_span().end;
+        self.parser.expect(Token::CloseParen)?;
+        Ok(&*self.arena.alloc(ExprKind::Call {
+            keyword_varargs, func: left, span: Span { start, end },
+            args: positional_args.into_slice(),
+            keywords: keyword_args.into_slice()
+        })?)
+    }
+    fn parse_call_arg(&mut self, first_keyword_arg_name: Option<Symbol<'a>>) -> Result<ParsedCallArg<'a>, ParseError> {
+        match (self.parser.peek(), self.parser.look_ahead(1)?.map(|tk| tk.kind)) {
+            (Some(Token::Ident(name)), Some(Token::Equals)) => {
+                let name_span = self.parser.current_span();
+                self.parser.skip()?;
+                self.parser.expect(Token::Equals)?;
+                let value = self.expression()?;
+                Ok(ParsedCallArg::Keyword(Keyword {
+                    name: Ident { span: name_span, symbol: name },
+                    value, span: Span { start: name_span.start, end: value.span().end }
+                }))
+            },
+            (Some(Token::DoubleStar), _) => {
+                self.parser.skip()?;
+                Ok(ParsedCallArg::KeywordVararg(self.expression()?))
+            },
+            _ => {
+                if let Some(first_keyword_arg_name) = first_keyword_arg_name {
+                    return Err(self.parser.unexpected(&format_args!(
+                        "a keyword arg name, because {} was already a keyword",
+                        first_keyword_arg_name
+                    )));
+                }
+                Ok(ParsedCallArg::Positional(self.expression()?))
+            }
+        }
     }
     fn binary_bool_op(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError>{
         let op = BoolOp::from_token(&tk.kind).unwrap();
@@ -922,6 +993,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
     }
 }
+enum ParsedCallArg<'a> {
+    Positional(Expr<'a>),
+    Keyword(Keyword<'a>),
+    KeywordVararg(Expr<'a>)
+}
 #[derive(Copy, Clone, Debug)]
 enum CollectionType {
     List,
@@ -1220,6 +1296,49 @@ mod test {
             body: ctx.name("a"),
             test: ctx.name("cond"),
             or_else: ctx.name("b")
+        })));
+    }
+    #[test]
+    fn calls() {
+        test_expr("func()", |ctx| Ok(ctx.expr(ExprKind::Call {
+            args: &[],
+            keywords: &[],
+            keyword_varargs: None,
+            func: ctx.name("func"),
+            span: DUMMY
+        })));
+        test_expr("func(1, 2,)", |ctx| Ok(ctx.expr(ExprKind::Call {
+            args: vec!(ctx, ctx.int(1), ctx.int(2)),
+            keywords: &[],
+            keyword_varargs: None,
+            func: ctx.name("func"),
+            span: DUMMY
+        })));
+        test_expr("func(1, b, c=d)", |ctx| Ok(ctx.expr(ExprKind::Call {
+            args: vec!(ctx, ctx.int(1), ctx.name("b")),
+            keywords: vec!(ctx, Keyword {
+                name: ctx.ident("c"),
+                value: ctx.name("d"),
+                span: DUMMY
+            }),
+            keyword_varargs: None,
+            func: ctx.name("func"),
+            span: DUMMY
+        })));
+        test_expr("obj.method(1, b, c=d, e=f, **kwargs)", |ctx| Ok(ctx.expr(ExprKind::Call {
+            args: vec!(ctx, ctx.int(1), ctx.name("b")),
+            keywords: vec!(ctx, Keyword {
+                name: ctx.ident("c"),
+                value: ctx.name("d"),
+                span: DUMMY
+            }, Keyword {
+                name: ctx.ident("e"),
+                value: ctx.name("f"),
+                span: DUMMY
+            }),
+            keyword_varargs: Some(ctx.name("kwargs")),
+            func: ctx.attr_ref(ctx.name("obj"), "method"),
+            span: DUMMY
         })));
     }
     #[test]

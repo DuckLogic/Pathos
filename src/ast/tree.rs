@@ -458,6 +458,7 @@ pub enum ExprKind<'a> {
         func: Expr<'a>,
         args: &'a [Expr<'a>],
         keywords: &'a [Keyword<'a>],
+        keyword_varargs: Option<Expr<'a>>
     },
     FormattedValue {
         /// The span of the source
@@ -821,7 +822,7 @@ impl<'a> Spanned for Arg<'a> {
 #[derive(Educe, Debug, Clone)]
 #[educe(PartialEq, Eq, Hash)]
 pub struct Keyword<'a> {
-    pub arg: Option<Ident<'a>>,
+    pub name: Ident<'a>,
     pub value: Expr<'a>,
     #[educe(Hash(ignore))]
     #[educe(PartialEq(ignore))]
