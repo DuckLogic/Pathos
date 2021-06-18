@@ -17,7 +17,6 @@ use crate::vec;
 
 use super::PythonParser;
 use super::parser::{IParser, SpannedToken};
-use crate::parse::parser::{Parser};
 use crate::ast::ident::Symbol;
 
 struct PrefixParser<'src, 'a, 'p> {
@@ -308,6 +307,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                      * In other words, 'def sneaky(a, b, c, \,)'
                      * We need to fix this for the keyword-only specifier too
                      */
+                    continue 'argParsing;
                 },
                 Some(Token::Star) => {
                     match current_style {
@@ -346,7 +346,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                         },
                         ArgumentStyle::KeywordVararg | ArgumentStyle::Vararg => unreachable!()
                     }
-                    self.parser.skip()?;
+                    self.parser.expect(Token::Star)?;
                     match self.parser.peek() {
                         Some(Token::Ident(_)) => {
                             assert_eq!(vararg, None, "Already parsed a vararg");
@@ -383,7 +383,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                         &ArgumentParseMode::ForbidDefaults {
                             reason: "for keyword vararg parameter"
                         },
-                        ArgumentStyle::Vararg
+                        ArgumentStyle::KeywordVararg
                     )?)?);
                     break 'argParsing;
                 }
@@ -1271,6 +1271,9 @@ mod test {
     #[test]
     fn arg_declarations() {
         // Simple arg declarations
+        test_arg_declaration("()", &mut |ctx| {
+            ctx.arg_declarations(&[])
+        });
         test_arg_declaration("(a, b, c)", &mut |ctx| {
             ctx.arg_declarations(vec!(
                 ctx,
@@ -1301,6 +1304,98 @@ mod test {
                 ctx.arg("c", Some(ctx.name("str")), Some(ctx.str_lit("cool")), ArgumentStyle::Positional),
                 ctx.arg("d", None, Some(ctx.int(1)), ArgumentStyle::Positional)
             ))
-        })
+        });
+        // Try some positional only args
+        test_arg_declaration(r#"(a: bool, b: ClassType, /, c: bool)"#, &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.arg("c", Some(ctx.name("bool")), None, ArgumentStyle::PositionalOnly)
+            ))
+        });
+        // Add in varargs
+        test_arg_declaration(r#"(a: bool, b: ClassType, /, c: bool, *items: int)"#, &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.arg("c", Some(ctx.name("bool")), None, ArgumentStyle::PositionalOnly),
+                ctx.arg("items", Some(ctx.name("int")), None, ArgumentStyle::Vararg)
+            ))
+        });
+        // Keyword-only specifiers
+        test_arg_declaration(r#"(a: bool, b: ClassType, /, c: bool = True, *, d: int = 3)"#, &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.arg("c", Some(ctx.name("bool")), Some(ctx.bool(true)), ArgumentStyle::PositionalOnly),
+                ctx.keyword_arg("d", Some(ctx.name("int")), Some(ctx.int(3)))
+            ))
+        });
+        // A varargs functions just like a keyword-only specifier
+        test_arg_declaration("(a, b, *items, e)", &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", None),
+                ctx.simple_arg("b", None),
+                ctx.arg("items", None, None, ArgumentStyle::Vararg),
+                ctx.keyword_arg("e", None, None)
+            ))
+        });
+        test_arg_declaration(r#"(a: bool, b: ClassType, /, c: bool = True, *items, d: int = 3, e)"#, &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.arg("c", Some(ctx.name("bool")), Some(ctx.bool(true)), ArgumentStyle::PositionalOnly),
+                ctx.arg("items", None, None, ArgumentStyle::Vararg),
+                ctx.keyword_arg("d", Some(ctx.name("int")), Some(ctx.int(3))),
+                ctx.keyword_arg("e", None, None)
+            ))
+        });
+        // Try keyword-only specifier without positional only
+        test_arg_declaration("(a: bool, b: ClassType, *, d: int = 3, e)", &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.keyword_arg("d", Some(ctx.name("int")), Some(ctx.int(3))),
+                ctx.keyword_arg("e", None, None)
+            ))
+        });
+        // Try the `**kwargs` collector
+        test_arg_declaration("(a, b, **kwargs)", &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", None),
+                ctx.simple_arg("b", None),
+                ctx.arg("kwargs", None, None, ArgumentStyle::KeywordVararg)
+            ))
+        });
+        // Try the `**kwargs` collector + `*items` collector
+        test_arg_declaration("(a, b, *items, **kwargs)", &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", None),
+                ctx.simple_arg("b", None),
+                ctx.arg("items", None, None, ArgumentStyle::Vararg),
+                ctx.arg("kwargs", None, None, ArgumentStyle::KeywordVararg)
+            ))
+        });
+        // Try all possible features, stitched together
+        test_arg_declaration(r#"(a: bool, b: ClassType, /, c: bool = True, *items, d: int = 3, e, **kwargs)"#, &mut |ctx| {
+            ctx.arg_declarations(vec!(
+                ctx,
+                ctx.simple_arg("a", Some("bool")),
+                ctx.simple_arg("b", Some("ClassType")),
+                ctx.arg("c", Some(ctx.name("bool")), Some(ctx.bool(true)), ArgumentStyle::PositionalOnly),
+                ctx.arg("items", None, None, ArgumentStyle::Vararg),
+                ctx.keyword_arg("d", Some(ctx.name("int")), Some(ctx.int(3))),
+                ctx.keyword_arg("e", None, None),
+                ctx.arg("kwargs", None, None, ArgumentStyle::KeywordVararg)
+            ))
+        });
     }
 }
