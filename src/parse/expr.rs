@@ -12,13 +12,14 @@ use crate::ast::{Ident, Span, Spanned};
 use crate::ast::constants::FloatLiteral;
 use crate::ast::tree::*;
 use crate::lexer::Token;
-use crate::parse::errors::ParseError;
+use crate::parse::errors::{ParseError, ParseErrorKind};
 use crate::vec;
 
 use super::parser::{IParser, SpannedToken};
 use super::PythonParser;
 use crate::parse::ArgumentParseOptions;
 use crate::parse::parser::{EndFunc, ParseSeperated};
+use arrayvec::ArrayVec;
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -246,6 +247,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::Call,
                 func: Self::attr_reference
             },
+            Token::OpenBracket => InfixParser {
+                prec: ExprPrec::Call, // Slicing/subscript has same priority as calls
+                func: Self::subscript
+            },
             _ => return None
         })
     }
@@ -316,6 +321,95 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 None => original_keyword_span.end
             };
             Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
+        }
+    }
+    fn subscript(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::OpenBracket);
+        let mut subscript_indexes = Vec::new(self.arena);
+        let mut is_first = true;
+        loop {
+            if !is_first && self.parser.peek() == Some(Token::CloseBracket) { break }
+            is_first = false;
+            subscript_indexes.push(self.parse_subscript_index(Token::CloseBracket)?)?;
+            match self.parser.peek() {
+                Some(Token::Comma) => {
+                    self.parser.skip()?;
+                }
+                Some(Token::CloseBracket) => break,
+                _ => return Err(self.parser.unexpected(&"either a comma or ']'"))
+            }
+        }
+        let end = self.parser.expect(Token::CloseBracket)?.span.end;
+        let index = if subscript_indexes.len() > 1 {
+            &*self.arena.alloc(ExprKind::Tuple {
+                ctx: self.expression_context,
+                span: Span { start: subscript_indexes[0].span().start, end: subscript_indexes.last().unwrap().span().end },
+                elts: subscript_indexes.into_slice()
+            })?
+        } else {
+            match subscript_indexes.get(0) {
+                Some(&index) => index,
+                None => {
+                    let end = self.parser.current_span().end;
+                    return Err(ParseError::builder(Span { start: tk.span.start, end }, ParseErrorKind::UnexpectedToken)
+                        .expected("A subscript index/key")
+                        .actual("An immediate closing ']'")
+                        .build())
+                }
+            }
+        };
+        Ok(&*self.arena.alloc(ExprKind::Subscript {
+            span: Span { start: left.span().start, end },
+            slice: left,
+            ctx: self.expression_context, index
+        })?)
+    }
+    /// Parse a subscript index, which could potentially be a slice
+    ///
+    /// This gives unified handling for subscripting `map[key]`, slicing `l[1:2]`,
+    /// and any combination of both `map[key, 1:2]`
+    fn parse_subscript_index(&mut self, closing_token: Token<'a>) -> Result<Expr<'a>, ParseError> {
+        let start_index = self.parser.current_span().start;
+        let mut end_index = start_index;
+        let mut entries = ArrayVec::<Option<Expr<'a>>, 3>::new();
+        while entries.len() < 3 {
+            if let Some(Token::Colon) = self.parser.peek() {
+                /*
+                 * We have a colon without an expression before it.
+                 * This corresponds to `a[:]`.
+                 * Push `None` onto the stack of entries
+                 */
+                end_index = self.parser.current_span().end;
+                self.parser.skip()?;
+                entries.push(None);
+            } else if self.parser.peek() == Some(closing_token) && !entries.is_empty() {
+                break;
+            } else {
+                let expr = self.expression()?;
+                end_index = expr.span().end;
+                if let Some(Token::Colon) = self.parser.peek() {
+                    end_index = self.parser.current_span().end;
+                    self.parser.skip()?;
+                    entries.push(Some(expr));
+                } else {
+                    entries.push(Some(expr));
+                    break // Something else, we must be done with this particular slicing
+                }
+            }
+        }
+        if entries.len() == 1 && entries[0].is_some() {
+            Ok(entries[0].unwrap())
+        } else {
+            // NOTE: Should always have at least one entry
+            let lower = entries[0];
+            let upper = entries.get(1).cloned().unwrap_or(None);
+            let step = entries.get(2).cloned().unwrap_or(None);
+            Ok(&*self.arena.alloc(ExprKind::Slice {
+                lower,
+                upper,
+                step,
+                span: Span { start: start_index, end: end_index }
+            })?)
         }
     }
     fn attr_reference(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
@@ -1039,5 +1133,111 @@ mod test {
                 elts: vec!(ctx, ctx.name("a"), ctx.name("b"))
             }))
         })));
+    }
+    #[test]
+    fn slicing() {
+        test_expr("a[b]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.name("b")
+        })));
+        test_expr("a[b,c]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Tuple {
+                span: DUMMY,
+                ctx: ExprContext::Load,
+                elts: vec!(ctx, ctx.name("b"), ctx.name("c"))
+            })
+        })));
+        // Slicing has the same precedence as attribute access
+        test_expr("a.b[c,d]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.attr_ref(ctx.name("a"), "b"),
+            index: ctx.expr(ExprKind::Tuple {
+                span: DUMMY,
+                ctx: ExprContext::Load,
+                elts: vec!(ctx, ctx.name("c"), ctx.name("d"))
+            })
+        })));
+        test_expr("a[b.c,d]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Tuple {
+                span: DUMMY,
+                ctx: ExprContext::Load,
+                elts: vec!(ctx, ctx.attr_ref(ctx.name("b"), "c"), ctx.name("d"))
+            })
+        })));
+        // Try actual slicing
+        test_expr("a[1:2]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Slice {
+                span: DUMMY,
+                lower: Some(ctx.int(1)),
+                upper: Some(ctx.int(2)),
+                step: None
+            })
+        })));
+        test_expr("a[:]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Slice {
+                span: DUMMY,
+                lower: None,
+                upper: None,
+                step: None
+            })
+        })));
+        // Believe it or not, this `::2` syntax is actually valid
+        test_expr("a[::2]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Slice {
+                span: DUMMY,
+                lower: None,
+                upper: None,
+                step: Some(ctx.int(2))
+            })
+        })));
+        test_expr("a[b::2]", |ctx| Ok(ctx.expr(ExprKind::Subscript {
+            span: DUMMY,
+            ctx: ExprContext::Load,
+            slice: ctx.name("a"),
+            index: ctx.expr(ExprKind::Slice {
+                span: DUMMY,
+                lower: Some(ctx.name("b")),
+                upper: None,
+                step: Some(ctx.int(2))
+            })
+        })));
+        // Combine slicing with implicit tuple creation
+        test_expr("a[b,c:d:2,3]", |ctx| {
+            let slice = ctx.expr(ExprKind::Slice {
+                span: DUMMY,
+                lower: Some(ctx.name("c")),
+                upper: Some(ctx.name("d")),
+                step: Some(ctx.int(2))
+            });
+            let index = ctx.expr(ExprKind::Tuple {
+                span: DUMMY,
+                elts: vec!(ctx, ctx.name("b"), slice, ctx.int(3)),
+                ctx: ExprContext::Load
+            });
+            Ok(ctx.expr(ExprKind::Subscript {
+                span: DUMMY,
+                index,
+                slice: ctx.name("a"),
+                ctx: ExprContext::Load
+            }))
+        });
     }
 }

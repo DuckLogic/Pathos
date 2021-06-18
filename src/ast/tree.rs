@@ -498,7 +498,7 @@ pub enum ExprKind<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        value: Expr<'a>,
+        index: Expr<'a>,
         slice: Expr<'a>,
         ctx: ExprContext,
     },
