@@ -240,8 +240,6 @@ impl<'p, 'src, 'a: 'p,
 #[derive(educe::Educe)]
 #[educe(Debug)]
 pub struct Parser<'src, 'a> {
-    #[educe(Debug(ignore))]
-    arena: &'a Allocator,
     /// The buffer of look-ahead, containing
     /// tokens we have already lexed.
     ///
@@ -260,9 +258,9 @@ pub struct Parser<'src, 'a> {
     lexer: PythonLexer<'src, 'a>,
 }
 impl<'src, 'a> Parser<'src, 'a> {
-    pub fn new(arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
+    pub fn new(_arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
         let mut res = Parser {
-            lexer, buffer: VecDeque::with_capacity(1), arena
+            lexer, buffer: VecDeque::with_capacity(1),
         };
         res.fill_buffer(1)?;
         Ok(res)
