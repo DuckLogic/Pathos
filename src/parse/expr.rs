@@ -1003,6 +1003,19 @@ mod test {
                 value: Some(ctx.name("a"))
             })
         )));
-        todo!("This needs more love")
+        test_expr("2 + (yield)", |ctx| Ok(ctx.bin_op(
+            ctx.int(2), Operator::Add, ctx.expr(ExprKind::Yield {
+                span: DUMMY,
+                value: None
+            })
+        )));
+        test_expr("(yield a, b,)", |ctx| Ok(ctx.expr(ExprKind::Yield {
+            span: DUMMY,
+            value: Some(ctx.expr(ExprKind::Tuple {
+                span: DUMMY,
+                ctx: ExprContext::Load,
+                elts: vec!(ctx, ctx.name("a"), ctx.name("b"))
+            }))
+        })));
     }
 }
