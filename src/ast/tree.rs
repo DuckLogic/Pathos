@@ -325,7 +325,7 @@ pub enum ExprKind<'a> {
         #[educe(Hash(ignore))]
         #[educe(PartialEq(ignore))]
         span: Span,
-        op: Boolop,
+        op: BoolOp,
         values: &'a [Expr<'a>],
     },
     NamedExpr {
@@ -585,9 +585,33 @@ pub enum ExprContext {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum Boolop {
+pub enum BoolOp {
     And,
     Or,
+}
+impl BoolOp {
+    #[inline]
+    pub const fn from_token(tk: &Token) -> Option<BoolOp> {
+        Some(match *tk {
+            Token::And => BoolOp::And,
+            Token::Or => BoolOp::Or,
+            _ => return None
+        })
+    }
+    #[inline]
+    pub const fn token<'a>(self) -> Token<'a> {
+        match self {
+            BoolOp::And => Token::And,
+            BoolOp::Or => Token::Or
+        }
+    }
+    #[inline]
+    pub fn precedence(self) -> crate::parse::ExprPrec {
+        match self {
+            BoolOp::And => ExprPrec::BooleanAnd,
+            BoolOp::Or => ExprPrec::BooleanOr
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

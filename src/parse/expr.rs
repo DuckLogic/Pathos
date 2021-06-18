@@ -251,6 +251,14 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: ExprPrec::Call, // Slicing/subscript has same priority as calls
                 func: Self::subscript
             },
+            Token::And => InfixParser {
+                prec: ExprPrec::BooleanAnd,
+                func: Self::binary_bool_op
+            },
+            Token::Or => InfixParser {
+                prec: ExprPrec::BooleanOr,
+                func: Self::binary_bool_op,
+            },
             _ => return None
         })
     }
@@ -322,6 +330,30 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             };
             Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
         }
+    }
+    fn binary_bool_op(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError>{
+        let op = BoolOp::from_token(&tk.kind).unwrap();
+        let start = left.span().start;
+        let mut res = vec![in self.arena; left]?;
+        loop {
+            /*
+             * NOTE: Pass our own precedence as the limit, to avoid unintentional recursion.
+             * We *don't* want `a or b or c` to parse as `a or (b or c)`
+             * It's all together as a single big array.
+             */
+            res.push(self.parse_prec(op.precedence())?)?;
+            if self.parser.peek() == Some(op.token())  {
+                self.parser.skip()?;
+                continue;
+            } else {
+                break
+            }
+        }
+        assert!(!res.len() >= 2);
+        Ok(&*self.arena.alloc(ExprKind::BoolOp {
+            span: Span { start, end: res.last().unwrap().span().end },
+            values: res.into_slice(), op
+        })?)
     }
     fn subscript(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
         assert_eq!(tk.kind, Token::OpenBracket);
@@ -995,6 +1027,64 @@ mod test {
                 ctx.int(2),  Operator::Pow, ctx.int(3)
             )
         )));
+    }
+    #[test]
+    fn binary_bool_ops() {
+        test_expr("1 and 2", |ctx| Ok(ctx.expr(ExprKind::BoolOp {
+            values: vec!(ctx, ctx.int(1), ctx.int(2)),
+            span: DUMMY,
+            op: BoolOp::And
+        })));
+        test_expr("a or b", |ctx| Ok(ctx.expr(ExprKind::BoolOp {
+            values: vec!(ctx, ctx.name("a"), ctx.name("b")),
+            span: DUMMY,
+            op: BoolOp::Or
+        })));
+        // can be chained indefinitely
+        test_expr("a or b or c or d", |ctx| Ok(ctx.expr(ExprKind::BoolOp {
+            values: vec!(ctx, ctx.name("a"), ctx.name("b"), ctx.name("c"), ctx.name("d")),
+            span: DUMMY,
+            op: BoolOp::Or
+        })));
+        /*
+         * By default, or has higher precedence (more binding power) than and.
+         * "a or b and c or d" parses as "(a or b) and (c or d)")
+         */
+        test_expr("a or b and c or d", |ctx| Ok(ctx.expr(
+            ExprKind::BoolOp {
+                op: BoolOp::Or, span: DUMMY,
+                values: vec!(
+                    ctx,
+                    ctx.name("a"),
+                    ctx.expr(ExprKind::BoolOp {
+                        values: vec!(ctx, ctx.name("b"), ctx.name("c")),
+                        span: DUMMY,
+                        op: BoolOp::And
+                    }),
+                    ctx.name("d")
+                )
+            }
+        )));
+        // However, we should be able to use parens to override
+        test_expr("(a or b) and (c or d)", |ctx| Ok(ctx.expr(
+            ExprKind::BoolOp {
+                op: BoolOp::And, span: DUMMY,
+                values: vec!(
+                    ctx,
+                    ctx.expr(ExprKind::BoolOp {
+                        values: vec!(ctx, ctx.name("a"), ctx.name("b")),
+                        span: DUMMY,
+                        op: BoolOp::Or
+                    }),
+                    ctx.expr(ExprKind::BoolOp {
+                        values: vec!(ctx, ctx.name("c"), ctx.name("d")),
+                        span: DUMMY,
+                        op: BoolOp::Or
+                    })
+                )
+            }
+        )));
+
     }
     #[test]
     fn collections() {
