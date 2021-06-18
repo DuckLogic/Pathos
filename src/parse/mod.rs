@@ -372,6 +372,14 @@ pub mod test {
                 span: DUMMY
             }
         }
+        pub fn attr_ref(&self, base: Expr<'a>, name: &'static str) -> Expr<'a> {
+            self.builder.expr(ExprKind::Attribute {
+                ctx: ExprContext::Load,
+                value: base,
+                attr: self.ident(name),
+                span: DUMMY
+            }).unwrap()
+        }
         pub fn expr(&self, e: ExprKind<'a>) -> Expr<'a> {
             self.builder.expr(e).unwrap()
         }

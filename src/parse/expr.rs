@@ -242,6 +242,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 prec: Operator::from_token(token)
                     .unwrap().precedence()
             },
+            Token::Period => InfixParser {
+                prec: ExprPrec::Call,
+                func: Self::attr_reference
+            },
             _ => return None
         })
     }
@@ -313,6 +317,16 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             };
             Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
         }
+    }
+    fn attr_reference(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::Period);
+        let name = self.parse_ident()?;
+        Ok(&*self.arena.alloc(ExprKind::Attribute {
+            value: left,
+            ctx: self.expression_context,
+            span: Span { start: left.span().start, end: name.span().end },
+            attr: name
+        })?)
     }
     fn lambda(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let start = tk.span.start;
@@ -835,6 +849,14 @@ mod test {
                 ctx.int(1), Operator::Pow, ctx.int(3)
             )
         })));
+    }
+    #[test]
+    fn attribute_reference() {
+        test_expr("a.b", |ctx| Ok(ctx.attr_ref(ctx.name("a"), "b")));
+        test_expr("a.b.c", |ctx| Ok(ctx.attr_ref(
+            ctx.attr_ref(ctx.name("a"), "b"),
+            "c"
+        )));
     }
     #[test]
     fn test_arith_associativity() {
