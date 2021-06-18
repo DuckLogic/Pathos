@@ -1029,6 +1029,17 @@ mod test {
         )));
     }
     #[test]
+    fn unary_ops() {
+        test_expr("not ~1", |ctx| Ok(ctx.expr(ExprKind::UnaryOp {
+            op: UnaryOp::Not, span: DUMMY,
+            operand: ctx.expr(ExprKind::UnaryOp {
+                op: UnaryOp::Invert,
+                operand: ctx.int(1),
+                span: DUMMY
+            })
+        })));
+    }
+    #[test]
     fn binary_bool_ops() {
         test_expr("1 and 2", |ctx| Ok(ctx.expr(ExprKind::BoolOp {
             values: vec!(ctx, ctx.int(1), ctx.int(2)),
