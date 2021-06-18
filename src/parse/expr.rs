@@ -18,6 +18,7 @@ use crate::vec;
 use super::parser::{IParser, SpannedToken};
 use super::PythonParser;
 use crate::parse::ArgumentParseOptions;
+use crate::parse::parser::{EndFunc, ParseSeperated};
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -243,6 +244,75 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             },
             _ => return None
         })
+    }
+    /// Parse a yield expression (doesn't handle any wrapping parenthesis)
+    ///
+    /// This accepts an [EndFunc]
+    /// to decide when parsing the yield should end.
+    /// This is because the single-form of from can actually yield nothing, or yield a list.
+    /// For example, both `yield` and `yield a, b` are valid.
+    ///
+    /// A yield expression can exist in any expression position,
+    /// provided that it is wrapped in parenthesis `5 + (yield inner)`.
+    ///
+    /// However, in certain cases the parens can be omitted:
+    /// 1. When the single element of an expression-statement
+    /// 2. When it is the sole expression on the right hand side of an assignment statemenet.
+    ///
+    /// Therefore, we keep this function public to allow those two special-cases.
+    ///
+    /// See docs: <https://docs.python.org/3.10/reference/expressions.html#yield-expressions>
+    pub fn parse_yield_expr(&mut self, mut end_func: impl EndFunc<'src, 'a>) -> Result<Expr<'a>, ParseError> {
+        let original_keyword_span = self.parser.expect(Token::Yield)?.span;
+        let start = original_keyword_span.start;
+        if let Some(Token::From) = self.parser.peek() {
+            self.parser.skip()?;
+            // From expressions are easy. We require one and only one value
+            let value = self.expression()?;
+            Ok(&*self.arena.alloc(ExprKind::YieldFrom {
+                span: Span { start, end: value.span().end },
+                value
+            })?)
+        } else {
+            /*
+             * In a a regular yield statement, we may encounter multiple items or none at all.
+             * First, check for an early end, then parse the first expression,
+             * then, check if we have more.
+             */
+            let value = if !end_func.should_end(&self.parser) {
+                let first = self.expression()?;
+                if end_func.should_end(&self.parser) {
+                    // Looks like we only have a single expression
+                    Some(first)
+                } else if let Some(Token::Comma) = self.parser.peek() {
+                    /*
+                     * We have multiple expressions (implicitly packing into a tuple).
+                     * Eat the comma, then delegate to parse seperated
+                     */
+                    let mut elements = vec![in self.arena; first]?;
+                    self.parser.expect(Token::Comma)?;
+                    let mut iter = ParseSeperated::new(
+                        self, |p| p.expression(),
+                        Token::Comma, end_func, true
+                    );
+                    while let Some(e) = iter.next().transpose()? {
+                        elements.push(e)?;
+                    }
+                    Some(&*self.arena.alloc(ExprKind::Tuple {
+                        span: Span { start: first.span().start, end: elements.last().unwrap().span().end },
+                        ctx: self.expression_context,
+                        elts: elements.into_slice()
+                    })?)
+                } else {
+                    return Err(self.parser.unexpected(&format_args!("a comma or {}", end_func.description())))
+                }
+            } else { None };
+            let end = match value {
+                Some(val) => val.span().end,
+                None => original_keyword_span.end
+            };
+            Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
+        }
     }
     fn lambda(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let start = tk.span.start;
@@ -478,6 +548,16 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     self.expression_context
                 )?);
             }
+        }
+        if collection_type.is_tuple() && self.parser.peek() == Some(Token::Yield) {
+            /*
+             * NOTE: Yield tokens need to be special-cased,
+             * because they are only allowed inside parens (aside from a few exceptions).
+             */
+            // This is actually a yield expression
+            let yield_expr = self.parse_yield_expr(Token::CloseParen)?;
+            self.parser.expect(Token::CloseParen)?;
+            return Ok(yield_expr)
         }
         let first = self.expression()?;
         let first_value = if collection_type.is_dict() {
@@ -914,5 +994,15 @@ mod test {
             )))?,
             body: ctx.bin_op(ctx.name("a"), Operator::Add, ctx.name("c"))
         })))
+    }
+    #[test]
+    fn yield_expr() {
+        test_expr("1 + (yield a)", |ctx| Ok(ctx.bin_op(
+            ctx.int(1), Operator::Add, ctx.expr(ExprKind::Yield {
+                span: DUMMY,
+                value: Some(ctx.name("a"))
+            })
+        )));
+        todo!("This needs more love")
     }
 }
