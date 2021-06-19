@@ -14,6 +14,7 @@ use crate::parse::errors::ParseErrorKind;
 pub mod errors;
 pub mod parser;
 mod expr;
+mod stmt;
 
 
 #[derive(Debug)]

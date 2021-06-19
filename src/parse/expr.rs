@@ -758,7 +758,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let target = self.parse_target_list(
             &mut |parser| parser.parser.peek() == Some(Token::In),
             &"'in'"
-        )?;
+        )?.with_implicit_tuple()?.unwrap();
         self.parser.expect(Token::In)?;
         // For the precedence of an iterator, we can have anything with higher precedence than a conditional
         let iter = self.parse_prec(ExprPrec::Conditional + 1)?;
@@ -782,7 +782,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// The closure is necessary to avoid backtracking.
     ///
     /// Implicitly converts a list to a tuple expression (with the appropriate [ExprContext])
-    fn parse_target_list(&mut self, should_end: &mut dyn FnMut(&Self) -> bool, expected_ending: &dyn Display) -> Result<Expr<'a>, ParseError> {
+    pub fn parse_target_list(&mut self, should_end: &mut dyn FnMut(&Self) -> bool, expected_ending: &dyn Display) -> Result<ExprList<'a>, ParseError> {
         let first = self.parse_target()?;
         if let Some(Token::Comma) = self.parser.peek() {
             let start = first.span().start;
@@ -795,19 +795,43 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 })?)?;
             }
             let end = v.last().unwrap().span().end;
-            Ok(&*self.arena.alloc(ExprKind::Tuple {
-                span: Span { start, end }, ctx: self.expression_context,
-                elts: v.into_slice()
-            })?)
+            Ok(ExprList::Tuple {
+                arena: self.arena, ctx: self.expression_context,
+                slice: v.into_slice()
+            })
         } else {
-            Ok(first)
+            Ok(ExprList::Single { arena: self.arena, expr: first })
+        }
+    }
+    pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_func: impl EndFunc<'src, 'a>, expected_ending: &dyn Display) -> Result<ExprList<'a>, ParseError> {
+        if allow_empty && end_func.should_end(&self.parser) {
+            return Ok(ExprList::Empty)
+        }
+        let first = self.parse_target()?;
+        if let Some(Token::Comma) = self.parser.peek() {
+            let start = first.span().start;
+            let mut v = vec![in self.arena; first]?;
+            while let Some(Token::Comma) = self.parser.peek() {
+                self.parser.skip()?;
+                if should_end(self) { break; }
+                v.push(self.expression().map_err(|err| {
+                    err.with_expected_msg(format_args!("either an expression or {}", expected_ending))
+                })?)?;
+            }
+            let end = v.last().unwrap().span().end;
+            Ok(ExprList::Tuple {
+                arena: self.arena, ctx: self.expression_context,
+                slice: v.into_slice()
+            })
+        } else {
+            Ok(ExprList::Single { arena: self.arena, expr: first })
         }
     }
     /// Parses a target expression
     ///
     /// This corresponds to "target" in the grammar (see the section on assignments):
     /// https://docs.python.org/3.10/reference/simple_stmts.html#assignment-statements
-    fn parse_target(&mut self) -> Result<Expr<'a>, ParseError> {
+    pub fn parse_target(&mut self) -> Result<Expr<'a>, ParseError> {
         self.parse_prec(ExprPrec::TARGET_PREC)
     }
 
@@ -1010,6 +1034,64 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 elements.into_slice(),
                 self.expression_context
             )?)
+        }
+    }
+}
+/// Helper struct for lists of expressions
+pub enum ExprList<'a> {
+    Empty,
+    Single {
+        arena: &'a Allocator,
+        expr: Expr<'a>
+    },
+    Tuple {
+        arena: &'a Allocator,
+        ctx: ExprContext,
+        slice: &'a [Expr<'a>]
+    }
+}
+impl<'a> ExprList<'a> {
+    #[inline]
+    pub fn span(&self) -> Option<Span> {
+        match *self {
+            ExprList::Empty => None,
+            ExprList::Single { expr, .. } => Some(expr.span()),
+            ExprList::Tuple { slice,  .. } => Some(Span {
+                start: slice[0].span().start,
+                end: slice.last().unwrap().span().end
+            })
+        }
+    }
+    #[inline]
+    pub fn single(&self) -> Option<Expr<'a>> {
+        match *self {
+            ExprList::Empty => None,
+            ExprList::Single { expr, .. } => Some(expr),
+            ExprList::Tuple { slice, .. } => {
+                debug_assert_ne!(slice.len(), 1);
+                None
+            }
+        }
+    }
+    #[inline]
+    pub fn into_slice(self) -> Result<&'a [Expr<'a>], AllocError> {
+        match self {
+            ExprList::Empty => Ok(&[]),
+            ExprList::Single { expr, arena } => Ok(vec![in arena; expr]),
+            ExprList::Tuple { slice, .. } => Ok(slice)
+        }
+    }
+    pub fn with_implicit_tuple(self) -> Result<Option<Expr<'a>>, AllocError> {
+        match self {
+            ExprList::Empty => Ok(None),
+            ExprList::Single { expr, .. } => Ok(Some(expr)),
+            ExprList::Tuple { arena, ctx, slice } => {
+                Ok(Some(arena.alloc(ExprKind::Tuple {
+                    span: Span {
+                        start: slice[0].span().start, end },
+                    ctx, elts: slice.into_slice()
+                })?))
+            }
         }
     }
 }

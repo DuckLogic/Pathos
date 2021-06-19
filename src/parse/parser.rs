@@ -288,6 +288,11 @@ impl<'src, 'a> Parser<'src, 'a> {
             None => None
         }
     }
+    /// Return if the next token is either `Newline` or the EOF
+    #[inline]
+    pub fn is_newline(&self) -> bool {
+        self.peek() == Some(Token::Newline) || self.is_end_of_file()
+    }
     fn assert_empty(&mut self) -> bool {
         debug_assert_eq!(
             self.lexer.next(),
