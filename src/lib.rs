@@ -45,7 +45,7 @@ pub fn parse<'a, 'src>(
             ast::tree::Mod::Expression { body: res }
         }
     };
-    parser.parser.expect_end()?;
+    parser.parser.expect_end_of_input()?;
     // give back the symbol table we took
     *symbol_table = parser.parser.into_lexer().into_symbol_table();
     Ok(res)

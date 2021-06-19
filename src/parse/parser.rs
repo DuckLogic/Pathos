@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -240,48 +239,51 @@ impl<'p, 'src, 'a: 'p,
 #[derive(educe::Educe)]
 #[educe(Debug)]
 pub struct Parser<'src, 'a> {
-    /// The buffer of look-ahead, containing
-    /// tokens we have already lexed.
+    /// The buffer of tokens, always containing at least a single line of tokens.
     ///
-    /// This should always contain at least
-    /// one token, unless we have reached the
-    /// end of the file.
+    /// The end of the buffer corresponds to one of two things:
+    /// 1. The end of the logical line.
+    /// 2. The end of the file.
     ///
-    /// These are ordered first token (peek) at the back,
-    /// with the farthest ahead token at the front.
+    /// The buffering deals only in logical lines, not physical lines.
+    buffer: Vec<SpannedToken<'a>>,
+    /// The current position within the buffer
     ///
-    /// To increase lookahead without consuming anything,
-    /// add a new token with [VecDeque::push_front].
-    ///
-    /// To consume the first token, use [VecDeque::pop_back].
-    buffer: VecDeque<SpannedToken<'a>>,
+    /// Once this reaches the buffer's length,
+    /// the buffer is empty and a new line needs to be fetched.
+    current_index: usize,
+    /// If the lexer has reached the end of the file,
+    /// and there is no point asking for more.
+    eof: bool,
     lexer: PythonLexer<'src, 'a>,
 }
 impl<'src, 'a> Parser<'src, 'a> {
     pub fn new(_arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
         let mut res = Parser {
-            lexer, buffer: VecDeque::with_capacity(1),
+            lexer, buffer: Vec::with_capacity(32),
+            eof: false,
+            current_index: 0
         };
-        res.fill_buffer(1)?;
+        res.next_line()?;
         Ok(res)
     }
     /// The span of the next token (same as given by peek)
     ///
-    /// If this is at the EOF, gives the last token.
+    /// If this is at the end of line, this gives the last token.
     #[inline]
     pub fn current_span(&self) -> Span {
-        match self.buffer.back() {
+        match self.peek_tk() {
             Some(tk) => tk.span,
             None => self.lexer.current_span()
         }
     }
     #[inline]
     pub fn peek_tk(&self) -> Option<SpannedToken<'a>> {
-        self.buffer.back().cloned()
+        self.buffer.get(self.current_index).cloned()
     }
     #[inline]
     pub fn peek(&self) -> Option<Token<'a>> {
-        match self.buffer.back() {
+        match self.buffer.get(self.current_index) {
             Some(tk) => Some(tk.kind),
             None => None
         }
@@ -297,15 +299,13 @@ impl<'src, 'a> Parser<'src, 'a> {
     ///
     /// If `amount == 0`, then this is equivalent
     /// to calling [Parser::peek]
+    ///
+    /// This doesn't necessarily advance the lexer past newlines,
+    /// and may return `None` if the end of line is encountered
     #[inline]
-    pub fn look_ahead(&mut self, amount: usize) -> Result<Option<SpannedToken<'a>>, ParseError> {
-        if amount >= self.buffer.len() {
-            self.fill_buffer(amount + 1)?;
-        }
-        let index = self.buffer.len()
-            .wrapping_sub(1)
-            .wrapping_sub(amount);
-        Ok(self.buffer.get(index).cloned())
+    pub fn look_ahead(&self, amount: usize) -> Result<Option<SpannedToken<'a>>, ParseError> {
+        // TODO: Change signature to reflect the fact this is infallible
+        Ok(self.buffer.get(self.current_index + amount).cloned())
     }
     /// Skips over the next token without returning it
     ///
@@ -320,70 +320,63 @@ impl<'src, 'a> Parser<'src, 'a> {
     ///     _ => return Err(())
     /// }
     /// ````
-    /// This is just like `pop`, but doesn't return the reuslt token.
+    /// This is just like `pop`, but doesn't return the result token.
     ///
-    /// NOTE: Panics on EOF. It is the caller's responsibility to check
+    /// NOTE: Panics on end of line. It is the caller's responsibility to check
     /// this. This should be fine if you've already done a call to `peek`.
     #[inline]
     pub fn skip(&mut self) -> Result<Token<'a>, ParseError> {
         match self.pop() {
             Ok(Some(SpannedToken { kind, .. })) => Ok(kind),
-            Ok(None) => unreachable!("EOF"),
+            Ok(None) => unreachable!("EOL/EOF"),
             Err(e) => Err(e)
         }
     }
-    /// Pop a token, lexing a new token and adding 
-    /// it to the internal buffer
+    /// Pop a token, advancing the position in the internal buffer.
     ///
-    /// Returns an error if the lexer
-    /// has an issue with the next token.
-    /// The current token *cannot* trigger an error,
-    /// because it's already in the buffer.
+    /// Return `None` if already at the end of the line.
     #[inline]
     pub fn pop(&mut self) -> Result<Option<SpannedToken<'a>>, ParseError> {
-        match self.buffer.len() {
-            0 => {
-                /*
-                 * The buffer should only be
-                 * empty at EOF. In debug mode,
-                 * we should double-check this
-                 */
-                debug_assert!(self.assert_empty());
-                return Ok(None)
+        // TODO: Update signature to reflect the fact this is now infallible
+        match self.buffer.get(self.current_index) {
+            Some(&tk) => {
+                self.current_index += 1;
+                Ok(Some(tk))
             },
-            1 => {
-                /*
-                 * We only have one left,
-                 * so consuming this token would
-                 * otherwise empty the buffer.
-                 * Maintain our invariant of having,
-                 * by requesting to fill the buffer to
-                 * length two.
-                 */
-                self.fill_buffer(2)?;
-                #[cfg(debug_assertions)] {
-                    match self.buffer.len() {
-                        0 => unreachable!(),
-                        1 => debug_assert!(self.assert_empty()),
-                        _ => {}
-                    }
-                }
-            },
-            _ => {},
+            None => Ok(None)
         }
-        Ok(self.buffer.pop_back())
     }
-    #[cold]
-    fn fill_buffer(&mut self, amount: usize) -> Result<bool, ParseError> {
-        // TODO: Should we buffer more aggressively?
-        self.buffer.reserve(amount);
-        while self.buffer.len() < amount {
+    /// Clear the internal buffer, and reset the parser for use with parsing a new line
+    pub fn reset_buffer(&mut self) -> Result<(), ParseError> {
+        self.buffer.clear();
+        self.current_index = 0;
+        self.next_line()?; // We always have at least one line (unless we have an error)
+        Ok(())
+    }
+    /// Give the length of input remaining in the buffer
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.buffer.len() - self.current_index
+    }
+    /// Advance the tokenizer, and fill the buffer with the next (logical) line of input
+    ///
+    /// NOTE: This method only cares about *logical* lines. A single logical line can
+    /// span across multiple physical lines.
+    ///
+    /// Returns the number of tokens consumed, or `None` if the EOF is reached
+    pub fn next_line(&mut self) -> Result<Option<usize>, ParseError> {
+        if self.eof {
+            return Ok(None);
+        }
+        let mut count = 0;
+        loop {
             let lexer_span = self.lexer.current_span();
-            self.buffer.push_front(match self.lexer.next() {
-                Ok(Some(val)) => SpannedToken {
-                    span: lexer_span, kind: val
+            let tk = match self.lexer.next() {
+                Ok(Some(val)) => SpannedToken { span: lexer_span, kind: val },
+                Ok(None) => {
+                    self.eof = true;
+                    break
                 },
-                Ok(None) => return Ok(false),
                 Err(cause) => {
                     let kind = match cause {
                         LexError::AllocFailed => {
@@ -393,18 +386,33 @@ impl<'src, 'a> Parser<'src, 'a> {
                         LexError::InvalidToken => ParseErrorKind::InvalidToken,
                         LexError::InvalidString(cause) => ParseErrorKind::InvalidString(cause),
                     };
-                    return Err(ParseError::builder(
-                        lexer_span, kind
-                    ).build());
+                    return Err(ParseError::builder(lexer_span, kind).build());
                 },
-            })
+            };
+            self.buffer.push(tk);
+            count += 1;
+            if tk.kind == Token::Newline { break }
         }
-        Ok(true)
+        if count == 0 && self.eof {
+            Ok(None)
+        } else {
+            Ok(Some(count))
+        }
     }
-    /// Check if the parser is finished
+    /// Check if the internal buffer is empty.
+    ///
+    /// This can only be true if there is an end of file,
+    /// or if there is an end of line.
     #[inline]
-    pub fn is_finished(&self) -> bool {
-        self.buffer.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.current_index == self.buffer.len()
+    }
+    /// Check if the parser reached EOF
+    ///
+    /// This can be used to disambiguate between end of line (EOL) and end of file (EOF)
+    #[inline]
+    pub fn is_end_of_file(&self) -> bool {
+        self.current_index == self.buffer.len() && self.eof
     }
     //
     // Utilities
@@ -415,9 +423,21 @@ impl<'src, 'a> Parser<'src, 'a> {
             |actual| **actual == expected
         )
     }
-    pub fn expect_end(&self)  -> Result<(), ParseError> {
+    /// Expect that the parser has completely finished parsing its input
+    ///
+    /// This is typically done at the end of a top-level (user-visible) parse function.
+    ///
+    /// In order to give descriptive error messages,
+    /// this may need to advance the lexer and read a new line
+    pub fn expect_end_of_input(&mut self) -> Result<(), ParseError> {
+        if self.is_end_of_file() {
+            return Ok(())
+        }
+        if self.is_empty() {
+            self.next_line()?;
+        }
         match self.peek() {
-            None => Ok(()),
+            None => unreachable!(),
             Some(tk) => {
                 Err(ParseError::builder(self.current_span(), ParseErrorKind::UnexpectedToken)
                     .expected("end of input")
@@ -457,8 +477,10 @@ impl<'src, 'a> Parser<'src, 'a> {
     }
     #[cold]
     pub fn unexpected(&self, expected: &dyn Display) -> ParseError {
-        let kind = if self.is_finished() {
+        let kind = if self.is_end_of_file() {
             ParseErrorKind::UnexpectedEof
+        } else if self.is_empty() {
+            ParseErrorKind::UnexpectedEol
         } else {
             ParseErrorKind::UnexpectedToken
         };

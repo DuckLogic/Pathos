@@ -465,7 +465,7 @@ pub mod test {
         parser.parser.expect(Token::OpenParen).unwrap();
         let res = parser.parse_argument_declarations(Token::CloseParen, ArgumentParseOptions::default()).unwrap();
         parser.parser.expect(Token::CloseParen).unwrap();
-        parser.parser.expect_end().unwrap();
+        parser.parser.expect_end_of_input().unwrap();
         assert!(symbol_table.is_none());
         symbol_table = Some(parser.parser.into_lexer().into_symbol_table());
         let mut ctx = TestContext {

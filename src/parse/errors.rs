@@ -12,6 +12,7 @@ pub enum ParseErrorKind {
     InvalidToken,
     AllocationFailed,
     UnexpectedEof,
+    UnexpectedEol,
     UnexpectedToken,
     InvalidString(StringError),
 }
@@ -96,6 +97,9 @@ impl Display for ParseError {
             }
             ParseErrorKind::UnexpectedEof => {
                 f.write_str("Unexpected EOF")?;
+            },
+            ParseErrorKind::UnexpectedEol => {
+                f.write_str("Unexpected end of line")?;
             }
             ParseErrorKind::UnexpectedToken => {
                 f.write_str("Unexpected token")?;
