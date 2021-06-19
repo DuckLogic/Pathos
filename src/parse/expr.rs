@@ -227,6 +227,17 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     prec: ExprPrec::Unary
                 }
             },
+            Token::Star => {
+                PrefixParser {
+                    func: Self::starred_expr,
+                    /*
+                     * TODO: The CPython parser doesn't treat starred expressions as normal expressions.
+                     * What precedence should this really have?
+                     * Should we handle this differently? Maybe some sort of more detailed 'context'......
+                     */
+                    prec: ExprPrec::Unary
+                }
+            },
             Token::Lambda => {
                 PrefixParser {
                     func: Self::lambda,
@@ -356,6 +367,15 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             };
             Ok(&*self.arena.alloc(ExprKind::Yield { value, span: Span { start, end } })?)
         }
+    }
+    fn starred_expr(&mut self, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
+        assert_eq!(tk.kind, Token::Star);
+        let start = tk.span.start;
+        let value = self.expression()?;
+        Ok(&*self.arena.alloc(ExprKind::Starred {
+            span: Span { start, end: value.span().end },
+            value, ctx: self.expression_context
+        })?)
     }
     fn assignment_expr(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError> {
         assert_eq!(tk.kind, Token::AssignOperator);
