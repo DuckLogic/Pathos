@@ -257,6 +257,17 @@ pub struct Parser<'src, 'a> {
     eof: bool,
     lexer: PythonLexer<'src, 'a>,
 }
+
+impl<'src, 'a> Parser<'src, 'a> {
+    /// A limited form of look behind, which only works for the current line
+    pub(crate) fn look_behind(&self, amount: usize) -> Option<Token<'a>> {
+        assert!(amount >= 1);
+        self.current_index.checked_sub(amount)
+            .and_then(|index| self.buffer.get(index))
+            .map(|tk| tk.kind)
+    }
+}
+
 impl<'src, 'a> Parser<'src, 'a> {
     pub fn new(_arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
         let mut res = Parser {
