@@ -340,7 +340,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                     return Ok(Some(Token::IncreaseIndent));
                 } else if amount < current_top {
                     assert_eq!(self.pending_indentation_change, 0);
-                    while dbg!(amount) < dbg!(*self.indent_stack.last().unwrap()) {
+                    while amount < *self.indent_stack.last().unwrap() {
                         self.indent_stack.pop();
                         self.pending_indentation_change -= 1;
                         assert!(!self.indent_stack.is_empty());
@@ -413,15 +413,15 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         let original_bytes = originally_remaining.as_bytes();
         let estimated_size = if style.quote_style.is_triple_string() {
             ::memchr::memmem::find_iter(
+                original_bytes,
                 style.quote_style.text().as_bytes(),
-                original_bytes
-            ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
+            ).filter(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
             .next()
         } else {
             ::memchr::memchr_iter(
                 style.quote_style.start_byte(),
                 original_bytes
-            ).filter(|index| original_bytes.get(index - 1) != Some(&b'\\'))
+            ).filter(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
             .next()
         }.ok_or(StringError::MissingEnd)?;
         let mut buffer = crate::alloc::String::with_capacity(
