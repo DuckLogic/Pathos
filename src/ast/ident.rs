@@ -1,6 +1,6 @@
 //! Handling of identifiers
 
-use crate::ast::{Span, Spanned};
+use crate::ast::{Span, Spanned, AstNode};
 use std::fmt::{Debug, Formatter, Display};
 use std::hash::{Hash, Hasher, BuildHasher};
 use std::fmt;
@@ -9,6 +9,8 @@ use crate::alloc::{Allocator, AllocError};
 use std::borrow::Borrow;
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawVacantEntryMut;
+#[cfg(feature = "serialize")]
+use serde::{Serialize, Serializer};
 
 /// An identifier, with a specific source location.
 ///
@@ -68,9 +70,17 @@ impl Display for Ident<'_> {
         f.write_str(self.text())
     }
 }
+impl<'a> AstNode for Ident<'a> {}
+#[cfg(feature = "serialize")]
+impl Serialize for Ident<'_> {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        s.serialize_str(self.text())
+    }
+}
+
 /// A unique identifier, that doesn't correspond to a location in the source code.
 ///
-/// In contrast to [Ident], this doesn't have a [Span].
+/// In contrast to [Ident], this doesn't have a [Span] (so it can't implement [AstNode]).
 ///
 /// It is basically just a (unique) pointer to a string.
 ///
@@ -148,6 +158,12 @@ impl<'a> PartialEq<Symbol<'a>> for Ident<'a> {
     #[inline]
     fn eq(&self, other: &Symbol<'a>) -> bool {
         self.symbol == *other
+    }
+}
+#[cfg(feature = "serialize")]
+impl Serialize for Symbol<'_> {
+    fn serialize<S>(&self, s: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        s.serialize_str(self.text())
     }
 }
 impl<'a> Eq for Symbol<'a> {}

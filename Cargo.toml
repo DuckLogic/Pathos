@@ -18,6 +18,10 @@ unicode = ["unicode-named-escapes"]
 # This requires large tables to be included in
 # the binary.
 unicode-named-escapes = []
+# Support serde serialization of the AST
+serialize = ["serde", "serde_derive", "serde_with", "rug/serde", "num-bigint/serde"]
+# Support json serialization (using serde)
+json = ["serialize", "serde_json"]
 
 [dependencies]
 logos = "0.12"
@@ -35,7 +39,11 @@ ordered-float = "2.5"
 educe = "0.4"
 # Errors
 thiserror = "1"
-
+# Serde support
+serde = { version = "1", optional = true }
+serde_derive = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+serde_with = { version = "1.9", optional = true }
 
 [dependencies.lexical-core]
 version = "0.7.6"

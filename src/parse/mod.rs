@@ -3,13 +3,14 @@ use errors::ParseError;
 use crate::alloc::Allocator;
 use crate::ast::constants::ConstantPool;
 use crate::ast::ident::{Ident, Symbol};
-use crate::ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg};
+use crate::ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
 use crate::lexer::Token;
 
 pub use self::expr::ExprPrec;
 use self::parser::{IParser, Parser, SpannedToken};
 use crate::ast::{Span, Spanned};
 use crate::parse::errors::ParseErrorKind;
+use crate::ParseMode;
 
 pub mod errors;
 pub mod parser;
@@ -31,6 +32,25 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             expression_context: Default::default(),
         }
     }
+    pub fn parse_top_level(&mut self, mode: ParseMode) -> Result<PythonAst<'a>, ParseError> {
+        use crate::alloc::Vec;
+        match mode {
+            ParseMode::Expression => Ok(PythonAst::Expression {
+                body: self.expression()?
+            }),
+            ParseMode::Module => {
+                let mut stmts = Vec::new(self.arena);
+                while !self.parser.is_end_of_file() {
+                    let stmt = self.statement()?;
+                    stmts.push(stmt)?;
+                }
+                Ok(PythonAst::Module {
+                    body: stmts.into_slice(),
+                    type_ignores: &[]
+                })
+            }
+        }
+    }
     #[inline]
     pub fn parse_ident(&mut self) -> Result<Ident<'a>, ParseError> {
         let span = self.parser.current_span();
@@ -49,6 +69,12 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// <https://docs.python.org/3.10/reference/compound_stmts.html#function-definitions>
     pub fn parse_argument_declarations(&mut self, ending_token: Token<'a>, opts: ArgumentParseOptions) -> Result<&'a Arguments<'a>, ParseError>{
         use crate::alloc::Vec;
+        let start = self.parser.current_span().start;
+        /*
+         * NOTE: It is possible we are empty, in which case our span doesn't even include
+         * the span of the current token.
+         */
+        let mut end = start;
         let mut positional_args = Vec::new(self.arena);
         let mut keyword_args = Vec::new(self.arena);
         let mut keyword_vararg = None;
@@ -146,6 +172,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                                 }, opts,
                                 ArgumentStyle::Vararg
                             )?)?);
+                            end = vararg.unwrap().span().end;
                             // Fallthrough to comma/closing
                         },
                         Some(Token::Comma) => {
@@ -153,6 +180,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                              * We're a keyword-only specifier.
                              * Consume the comma and continue parsing
                              */
+                            end = self.parser.current_span().end;
                             self.parser.skip()?;
                             continue 'argParsing;
                         },
@@ -175,6 +203,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                         },
                         opts, ArgumentStyle::KeywordVararg
                     )?)?);
+                    end = keyword_vararg.unwrap().span().end;
                     break 'argParsing;
                 }
                 Some(other) if other == ending_token => {
@@ -187,6 +216,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                             return Err(e.with_expected_msg(unexpected_item_msg(current_style, &ending_token)))
                         }
                     };
+                    end = arg.span.end;
                     match current_style {
                         ArgumentStyle::Positional | ArgumentStyle::PositionalOnly => {
                             if arg.default_value.is_some() {
@@ -206,6 +236,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             // Fallthrough: Either parse a comma or ending
             match self.parser.peek() {
                 Some(Token::Comma) => {
+                    end = self.parser.current_span().end;
                     self.parser.skip()?;
                     continue 'argParsing;
                 },
@@ -220,7 +251,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         Ok(&*self.arena.alloc(Arguments {
             positional_args: positional_args.into_slice(),
             keyword_args: keyword_args.into_slice(),
-            keyword_vararg, vararg
+            keyword_vararg, vararg, span: Span { start, end }
         })?)
     }
     /// Parse a single argument declaration
@@ -448,7 +479,8 @@ pub mod test {
             }
             Arguments {
                 positional_args: positional_args.into_slice(), keyword_vararg,
-                keyword_args: keyword_args.into_slice(), vararg
+                keyword_args: keyword_args.into_slice(), vararg,
+                span: DUMMY
             }
         }
     }

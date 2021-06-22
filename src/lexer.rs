@@ -109,9 +109,7 @@ use crate::ast::ident::{SymbolTable, Symbol};
 
 /// A python identifier
 ///
-/// These are interned, so there should
-/// never be any duplicates within the same
-/// source file.
+/// TODO: Any further unification with [Symbol](crate::ast::Symbol)
 #[derive(Copy, Clone)]
 pub struct Ident<'a> {
     /*
@@ -998,39 +996,15 @@ fn ident<'src>(lex: &mut Lexer<'src, RawToken<'src>>) -> &'src str {
 fn fallback_parse_int<'arena>(
     radix: i64, text: &str
 ) -> BigInt {
+    use crate::ast::constants::BigIntInternal;
     /*
      * We get here if the regular integer parse code overflows.
      *
      * We fallback to parsing as a arbitrary precision integer.
+     * NOTE: This conflicts with an inherent method when using 'rug',
+     * so we need to disambiguate.
      */
-    #[cfg(feature="num-bigint")]
-    {
-        assert!(radix >= 1);
-        let mut result = BigInt::default();
-        for b in text.bytes() {
-            let digit_val = match b {
-                b'0'..=b'9' => b - b'0',
-                b'A'..=b'F' => b - b'A',
-                b'a'..=b'f' => b - b'a',
-                b'_' => continue, // Ignore underscores
-                _ => unreachable!("Invalid byte: {:?}", b)
-            };
-            result *= radix;
-            result += digit_val as i64;
-        }
-        result
-    }
-    #[cfg(feature="rug")]
-    {
-        let parsed = BigInt::parse_radix(text, radix).unwrap();
-        BigInt::from(parsed)
-    }
-    #[cfg(not(any(feature="num-bigint", feature="rug")))]
-    {
-        BigInt {
-            text: String::from(text)
-        }
-    }
+    BigIntInternal::parse_radix(radix as u32, text).unwrap()
 }
 macro_rules! int_parse_func {
     ($name:ident, radix = $radix:literal, strip = |$s:ident| $strip_code:expr) => {

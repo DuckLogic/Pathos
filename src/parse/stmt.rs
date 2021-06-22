@@ -2,15 +2,13 @@ use crate::parse::PythonParser;
 use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath};
 use crate::lexer::Token;
 use crate::ParseError;
-use crate::ast::{Spanned, Span};
+use crate::ast::{Spanned, Span, AstNode};
 use crate::parse::parser::{ParseSeperated, Parser};
 /*
  * Override the global `std::alloc::Vec` with our `crate::alloc::Vec`.
  * This is needed because we use a limiting, arena-allocator.
  */
 use crate::alloc::Vec;
-use std::hash::Hash;
-use std::fmt::Debug;
 
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn statement(&mut self) -> Result<Stmt<'a>, ParseError> {
@@ -111,18 +109,18 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             _ => Err(self.parser.unexpected(&"an end of line"))
         }
     }
-    fn parse_import_alias<N, F>(&mut self, mut inner_parser: F) -> Result<Alias<'a, N>, ParseError>
-        where F: FnMut(&mut Self) -> Result<N, ParseError>, N: Spanned + Eq + Hash + Clone + Debug {
+    fn parse_import_alias<N, F>(&mut self, mut inner_parser: F) -> Result<Alias<N>, ParseError>
+        where F: FnMut(&mut Self) -> Result<N, ParseError>, N: AstNode {
         let start = self.parser.current_span().end;
         let name = inner_parser(&mut *self)?;
         let renamed = if let Some(Token::As) = self.parser.peek() {
             self.parser.skip()?;
-            Some(self.parse_ident()?)
+            Some(inner_parser(&mut *self)?)
         } else {
             None
         };
         let end = match renamed {
-            Some(ref name) => name.span.end,
+            Some(ref name) => name.span().end,
             None => name.span().end
         };
         Ok(Alias {

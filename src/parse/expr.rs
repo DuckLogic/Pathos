@@ -1120,7 +1120,7 @@ impl CollectionType {
                 ExprKind::List { span, elts: elements, ctx }
             },
             CollectionType::Set => {
-                ExprKind::Set { span, elts: elements }
+                ExprKind::Set { span, elements: elements }
             },
             CollectionType::Tuple => {
                 ExprKind::Tuple { span, elts: elements, ctx }
@@ -1217,7 +1217,7 @@ mod test {
                 symbol_table: RefCell::new(&mut symbol_table) };
             expected(&mut ctx).unwrap()
         };
-        let actual = crate::parse(&arena, s, ParseMode::Expression, &mut pool, &mut symbol_table)
+        let actual = crate::parse_text(&arena, s, ParseMode::Expression, &mut pool, &mut symbol_table)
             .unwrap_or_else(|e| panic!(
                 "Failed to parse: {}\n\tBacktrace:\n{}", e,
                 e.backtrace().unwrap_or(&Backtrace::disabled())

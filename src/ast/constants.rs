@@ -2,6 +2,8 @@ use std::fmt::{self, Write, Display, Debug, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::convert::TryFrom;
+#[cfg(feature = "serialize")]
+use serde::{Serialize, Serializer};
 
 use hashbrown::HashMap;
 
@@ -110,6 +112,8 @@ impl Debug for ConstantPool<'_> {
     }
 }
 #[derive(Copy, Clone)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+#[cfg_attr(feature = "serialize", serde(into = "&ConstantKind"))]
 pub struct Constant<'a> {
     span: Span,
     kind: &'a ConstantKind<'a>
@@ -165,6 +169,12 @@ impl Spanned for Constant<'_> {
         self.span
     }
 }
+impl<'a> From<Constant<'a>> for &'a ConstantKind<'a> {
+    #[inline]
+    fn from(c: Constant<'a>) -> Self {
+       c.kind
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ConstantKind<'a> {
@@ -207,6 +217,37 @@ impl Display for ConstantKind<'_> {
             },
             ConstantKind::Complex(cplx) => {
                 write!(f, "{}", cplx)
+            }
+        }
+    }
+}
+#[cfg(feature = "serialize")]
+impl Serialize for ConstantKind<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeTuple, SerializeStruct};
+        match *self {
+            ConstantKind::None => s.serialize_none(),
+            ConstantKind::Bool(b) => s.serialize_bool(b),
+            ConstantKind::Tuple(tp) => {
+                let mut seq = s.serialize_tuple(tp.len())?;
+                for c in tp {
+                    seq.serialize_element(c)?;
+                }
+                seq.end()
+            },
+            ConstantKind::Integer(i) => s.serialize_i64(i),
+            ConstantKind::BigInteger(i) => i.serialize(s),
+            ConstantKind::Float(f) => s.serialize_f64(f.value()),
+            /*
+             * TODO: This is lossy.
+             * However, it seems to accurately represent what the Python AST does....
+             */
+            ConstantKind::String(lit) => s.serialize_str(lit.value),
+            ConstantKind::Complex(c) => {
+                let mut ser = s.serialize_struct("Complex", 2)?;
+                ser.serialize_field("real", &c.real.map_or(0.0, |f| f.value()))?;
+                ser.serialize_field("imaj", &c.imaginary.value())?;
+                ser.end()
             }
         }
     }
@@ -506,18 +547,130 @@ impl QuoteStyle {
     }
 }
 
+pub(crate) trait BigIntInternal: std::fmt::Display + Default {
+    type ParseRadixError: std::error::Error;
+    fn parse_radix(radix: u32, s: &str) -> Result<Self, Self::ParseRadixError>;
+}
+
 /// An arbitrary precision integer
 #[cfg(all(feature="num-bigint", not(feature="rug")))]
 pub type BigInt = num_bigint::BigInt;
+#[cfg(any(not(feature = "rug"), feature="num-bigint"))]
+#[derive(Debug)]
+#[derive(thiserror::Error)]
+pub enum FallbackRadixParseError {
+    #[error("Empty string")]
+    EmptyString,
+    #[error("Invalid digit: {c:?} in base {radix}")]
+    InvalidDigit {
+        c: char,
+        radix: u32
+    }
+}
+#[cfg(feature="num-bigint")]
+impl BigIntInternal for num_bigint::BigInt {
+    type ParseRadixError = FallbackRadixParseError;
+
+    fn parse_radix(radix: u32, text: &str) -> Result<Self, Self::ParseRadixError> {
+        assert!((2..=36).contains(&radix));
+        if text.is_empty() {
+            return Err(FallbackRadixParseError::EmptyString)
+        }
+        let mut result = Self::default();
+        for c in text.chars() {
+            let digit_val = match c {
+                '0'..='9' => Some(c as u8 - b'0'),
+                'A'..='Z' => Some(c as u8 - b'A'),
+                'a'..='f' => Some(c as u8 - b'a'),
+                '_' => continue, // Ignore underscores
+                _ => None
+            };
+            let digit_val = match digit_val {
+                Some(val) if (val as u32) < radix => val,
+                _ => {
+                    return Err(FallbackRadixParseError::InvalidDigit {
+                        c, radix
+                    });
+                }
+            };
+            result *= radix;
+            result += digit_val as i64;
+        }
+        Ok(result)
+    }
+}
 /// A rug BigInt
 #[cfg(feature="rug")]
 pub type BigInt = rug::Integer;
+#[cfg(feature = "rug")]
+impl BigIntInternal for BigInt {
+    type ParseRadixError = ::rug::integer::ParseIntegerError;
+
+    #[inline]
+    fn parse_radix(radix: u32, s: &str) -> Result<Self, Self::ParseRadixError> {
+        assert!((2..=36).contains(&radix));
+        rug::Integer::parse_radix(s, radix as i32).map(rug::Integer::from)
+    }
+}
+#[cfg(not(any(feature="num-bigint", feature="rug")))]
+impl BigIntInternal for BigInt {
+    fn parse_radix(radix: u32, s: &str) -> Result<>{
+        assert!((2..=36).contains(&radix));;
+        // Validate but dont parse
+        for c in s.chars() {
+            let digit_val = match c {
+                '0'..='9' => Some(b as u8 - b'0'),
+                'A'..='Z' => Some(b as u8 - b'A'),
+                'a'..='f' => Some(b as u8 - b'a'),
+                '_' => continue, // Ignore underscores
+                _ => None
+            };
+            match digit_val {
+                Some(val) if val < radix => {}, // Ignore
+                _ => {
+                    return Err(FallbackRadixParseError::InvalidDigit {
+                        c, radix
+                    });
+                }
+            }
+        }
+        String {
+            text: String::from(s),
+            radix
+        }
+    }
+}
 /// Fallback arbitrary precision integers,
 /// when all dependencies are disabled
 ///
 /// Stored as plain text
 #[cfg(not(any(feature="num-bigint", feature="rug")))]
+#[cfg(feature = "serialize", derive(Serialize))]
 pub struct BigInt {
-    /// The raw plain text
-    pub text: String
+    text: String,
+    radix: u32
+}
+#[cfg(not(any(feature="num-bigint", feature="rug")))]
+impl BigInt {
+    /// The raw text of this integer
+    ///
+    /// The interpretation of this varies
+    /// depending on the radix (or base) of this integer
+    #[inline]
+    pub fn raw_text(&self) -> &str {
+        &self.text
+    }
+    /// Take ownership of this integer's underlying raw text
+    #[inline]
+    pub fn into_raw_text(self) -> String {
+        self.text
+    }
+    /// The radix (or base) to interpret the text in
+    ///
+    /// Since the fallback implementation doesn't do any parsing,
+    /// this
+    #[inline]
+    pub fn radix(&self) -> u32 {
+        self.radix
+    }
 }
