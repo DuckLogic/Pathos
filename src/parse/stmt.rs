@@ -79,13 +79,19 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 self.arena.alloc(StmtKind::Continue { span })?
             },
             Some(Token::Import) => {
-                let span = self.parser.expect(Token::Continue)?.span;
+                let span = self.parser.expect(Token::Import)?.span;
                 let mut aliases = Vec::new(self.arena);
                 if self.parser.is_newline() {
                     return Err(self.parser.unexpected(&"Expected at least one import"))
                 }
-                while !self.parser.is_newline() {
+                loop {
                     aliases.push(self.parse_import_alias(|p| p.parse_module_path())?)?;
+                    if let Some(Token::Comma) = self.parser.peek() {
+                        self.parser.skip()?;
+                        continue
+                    } else {
+                        break
+                    }
                 }
                 assert!(!aliases.is_empty());
                 self.arena.alloc(StmtKind::Import {

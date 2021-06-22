@@ -196,27 +196,21 @@ impl<'p, 'src, 'a: 'p,
                 }
                 SeparatorParseState::AwaitingSeparator => {
                     let parser = self.parser.as_mut_parser();
-                    match parser.peek() {
-                        Some(tk) if tk == self.separator => {
-                            match parser.skip() {
-                                Ok(_) => {},
-                                Err(e) => return Some(Err(e))
-                            };
-                            self.state = SeparatorParseState::AwaitingNext;
-                            continue; // Continue parsing
-                        },
-                        Some(_) => {
-                            // We didn't see a separator, but maybe we should end the parse
-                            if self.maybe_end_parse() {
-                                return None;
-                            } else {
-                                // fallthrough to error
-                            }
+                    if parser.peek() == Some(self.separator) {
+                        match parser.skip() {
+                            Ok(_) => {},
+                            Err(e) => return Some(Err(e))
+                        };
+                        self.state = SeparatorParseState::AwaitingNext;
+                        continue; // Continue parsing
+                    } else {
+                        // We didn't see a separator, but maybe we should end the parse
+                        if self.maybe_end_parse() {
+                            return None;
+                        } else {
+                            // fallthrough to error
                         }
-                        None => {
-                            // EOF -> fallthrough to error
-                        }
-                    };
+                    }
                     return Some(Err(self.unexpected_separator()))
                 },
                 SeparatorParseState::Finished => {
