@@ -223,13 +223,13 @@ impl Display for ParseError {
         }
         match (&self.0.expected, &self.0.actual) {
             (Some(ref expected), Some(ref actual)) => {
-                write!(f, ": Expected {:?}, but got {:?}", expected, actual)?;
+                write!(f, ": Expected {}, but got {}", expected, actual)?;
             },
             (Some(ref expected), None) => {
-                write!(f, ": Expected {:?}", expected)?;
+                write!(f, ": Expected {}", expected)?;
             },
             (None, Some(ref actual)) => {
-                write!(f, ": Got {:?}", actual)?;
+                write!(f, ": Got {}", actual)?;
             },
             (None, None) => {}
         }
