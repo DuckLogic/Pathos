@@ -9,7 +9,7 @@ use bumpalo::Bump;
 use pathos_python_parser::ast::constants::ConstantPool;
 use pathos_python_parser::ast::ident::SymbolTable;
 use anyhow::{bail};
-use std::io::Read;
+use std::io::{Read, Write};
 
 fn main() -> anyhow::Result<()> {
     let options: Options = Options::parse();
@@ -29,15 +29,21 @@ fn main() -> anyhow::Result<()> {
     match options.output_format.unwrap_or_else(Default::default) {
         OutputFormat::Json => {
             let out = std::io::stdout();
-            let out = out.lock();
+            let mut out = out.lock();
             ::serde_json::to_writer_pretty(
-                out,
+                &mut out,
                 &ast
             )?;
+            out.write(b"\n")?;
+            out.flush()?;
+            drop(out);
         },
         OutputFormat::Debug => {
             println!("{:#?}", ast)
         }
+    }
+    if options.verbose {
+        eprintln!("Allocated {} bytes", arena.allocated_bytes());
     }
     Ok(())
 }

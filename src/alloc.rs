@@ -324,12 +324,17 @@ impl Allocator {
     pub fn remaining_bytes(&self) -> usize {
         self.limit - self.arena.allocated_bytes()
     }
+    /// Give the total number of bytes allocated in this arena
+    #[inline]
+    pub fn allocated_bytes(&self) -> usize {
+        self.arena.allocated_bytes()
+    }
 }
 impl Debug for Allocator {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         f.debug_struct("Allocator")
             .field("limit", &self.limit())
-            .field("allocated_bytes", &self.arena.allocated_bytes())
+            .field("allocated_bytes", &self.allocated_bytes())
             .finish()
     }
 }
