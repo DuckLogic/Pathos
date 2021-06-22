@@ -5,6 +5,11 @@ version = "0.1.0"
 authors = ["Techcable <Techcable@techcable.net>"]
 edition = "2018"
 
+[[bin]]
+name = "pathos-dump-ast"
+path = "src/bin/dump_ast.rs"
+required-features = ["cli"]
+
 [features]
 # By default, we use num-bigint because it's more
 # liberally licensed than GMP
@@ -22,6 +27,8 @@ unicode-named-escapes = []
 serialize = ["serde", "serde_derive", "serde_with", "rug/serde", "num-bigint/serde"]
 # Support json serialization (using serde)
 json = ["serialize", "serde_json"]
+# CLI support
+cli = ["clap", "json", "serialize", "anyhow", "tempfile"]
 
 [dependencies]
 logos = "0.12"
@@ -39,11 +46,15 @@ ordered-float = "2.5"
 educe = "0.4"
 # Errors
 thiserror = "1"
+anyhow = { version = "1", optional = true }
 # Serde support
 serde = { version = "1", optional = true }
 serde_derive = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }
 serde_with = { version = "1.9", optional = true }
+# CLI Parsing
+clap = { version = "3.0.0-beta.2", optional = true }
+tempfile = { version = "3", optional = true }
 
 [dependencies.lexical-core]
 version = "0.7.6"
