@@ -1,5 +1,5 @@
-use crate::parse::PythonParser;
-use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule};
+use crate::parse::{PythonParser, ArgumentParseOptions, SpannedToken};
+use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind};
 use crate::lexer::Token;
 use crate::ParseError;
 use crate::ast::{Spanned, Span, AstNode};
@@ -30,6 +30,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     targets: targets.into_slice()?
                 })?
             },
+            Some(Token::At) => {
+                self.parse_decorated()?
+            }
             Some(Token::Return) => {
                 let start_span = self.parser.expect(Token::Return)?.span;
                 let exprs  = self.parse_expression_list(
@@ -147,6 +150,97 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
             _ => Err(self.parser.unexpected(&"an end of line"))
         }
+    }
+    fn parse_decorated(&mut self) -> Result<Stmt<'a>, ParseError> {
+        let mut decorators = Vec::new(self.arena);
+        while let Some(Token::At) = self.parser.peek() {
+            self.parser.skip()?;
+            decorators.push(self.expression()?)?;
+            self.parser.expect(Token::Newline)?;
+            self.parser.next_line()?;
+        }
+        let decorators = &*decorators.into_slice();
+        match self.parser.peek() {
+            Some(Token::Def) => {
+                self.parse_function_def(decorators)
+            },
+            Some(Token::Async) if matches!(self.parser.look_ahead(1)?, Some(SpannedToken { kind: Token::Def, .. })) => {
+                self.parse_function_def(decorators)
+            },
+            Some(Token::Class) => {
+                self.parse_class_def(decorators)
+            },
+            _ => return Err(self.parser.unexpected(&"either a function or class definition"))
+        }
+    }
+    fn parse_function_def(&mut self, decorators: &'a [Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
+        let start = self.parser.current_span().start;
+        let is_async = match self.parser.peek() {
+            Some(Token::Def) => {
+                self.parser.skip()?;
+                false
+            },
+            Some(Token::Async) => {
+                self.parser.skip()?;
+                self.parser.expect(Token::Def)?;
+                true
+            },
+            _ => return Err(self.parser.unexpected(&"'def' or 'async def'"))
+        };
+        let name = self.parse_ident()?;
+        self.parser.expect(Token::OpenParen)?;
+        let arg_declarations = self.parse_argument_declarations(Token::CloseParen, ArgumentParseOptions {
+            allow_type_annotations: true
+        })?;
+        self.parser.expect(Token::CloseParen)?;
+        let return_type = if let Some(Token::CloseParen) = self.parser.peek() {
+            self.parser.skip()?;
+            Some(self.expression()?)
+        } else { None };
+        let mut end = self.parser.expect(Token::Colon)?.span.end;
+        self.parser.expect(Token::Newline)?;
+        self.parser.next_line()?;
+        self.parser.expect(Token::IncreaseIndent)?;
+        let mut body = Vec::new(self.arena);
+        loop {
+            let stmt = self.statement()?;
+            body.push(stmt)?;
+            self.parser.next_line()?;
+            match self.parser.peek() {
+                Some(Token::DecreaseIndent) => {
+                    self.parser.skip()?;
+                    break
+                },
+                Some(_) => {
+                    continue
+                }
+                None => return Err(self.parser.unexpected(&"a statement, or decrease in indentation"))
+            }
+        }
+        let span = Span { start, end };
+        let body = &*body.into_slice();
+        Ok(self.stmt(if is_async {
+            StmtKind::FunctionDef {
+                span, name,
+                args: arg_declarations,
+                body,
+                decorator_list: decorators,
+                returns: return_type,
+                type_comment: None
+            }
+        } else {
+            StmtKind::AsyncFunctionDef {
+                span, name,
+                args: arg_declarations,
+                body,
+                decorator_list: decorators,
+                returns: return_type,
+                type_comment: None
+            }
+        })?)
+    }
+    fn parse_class_def(&mut self, decorators: &[Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
+        todo!()
     }
     fn parse_relative_import_module(&mut self) -> Result<RelativeModule<'a>, ParseError> {
         let mut level = 0u32;

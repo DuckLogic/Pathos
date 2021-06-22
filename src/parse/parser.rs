@@ -84,14 +84,14 @@ pub trait IParser<'src, 'a>: Sized + Debug {
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
     fn as_parser(&self) -> &Parser<'src, 'a>;
     #[inline]
-    fn parse_seperated<'p, T, F>(
+    fn parse_seperated<'p, T, F, E>(
         &'p mut self,
         sep: Token<'a>,
-        ending: Token<'a>,
+        ending: E,
         parse_func: F,
         config: ParseSeperatedConfig
-    ) -> ParseSeperated<'p, 'src, 'a, Self, F, Token<'a>, T>
-        where F: FnMut(&mut Self) -> Result<T, ParseError> {
+    ) -> ParseSeperated<'p, 'src, 'a, Self, F, E, T>
+        where F: FnMut(&mut Self) -> Result<T, ParseError>, E: EndPredicate<'src, 'a> {
         ParseSeperated::new(
             self, parse_func,
             sep,

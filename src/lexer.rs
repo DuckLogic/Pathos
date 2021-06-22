@@ -744,6 +744,7 @@ impl<'a> Token<'a> {
             Token::RightShiftEquals => ">>=",
             Token::LeftShiftEquals => "<<=",
             Token::DoubleStarEquals => "**=",
+            Token::Newline => "\\n",
             _ => return None
         })
     }
