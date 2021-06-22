@@ -158,7 +158,7 @@ impl<'p, 'src, 'a,
         self.parser.as_parser().unexpected(
             &format_args!(
                 "Expected {:?} or ending {}",
-                self.separator.static_text().unwrap_or("<sep>"),
+                self.separator,
                 self.end_func.description()
             )
         )
@@ -498,7 +498,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     //
     pub fn expect(&mut self, expected: Token<'a>)  -> Result<SpannedToken<'a>, ParseError> {
         self.expect_if(
-            &expected.static_text().unwrap(),
+            &format_args!("{:?}", expected),
             |actual| **actual == expected
         )
     }

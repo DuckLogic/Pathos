@@ -547,7 +547,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
 }
 
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Token<'arena> {
     // **************
     //    Keywords
@@ -661,7 +661,7 @@ pub enum Token<'arena> {
 }
 impl<'a> Token<'a> {
     #[inline]
-    pub fn static_text(&self) -> Option<&'static str> {
+    fn static_text(&self) -> Option<&'static str> {
         Some(match *self {
             Token::False => "False",
             Token::Await => "await",
@@ -744,16 +744,25 @@ impl<'a> Token<'a> {
             Token::RightShiftEquals => ">>=",
             Token::LeftShiftEquals => "<<=",
             Token::DoubleStarEquals => "**=",
-            Token::Newline => "\\n",
             _ => return None
         })
     }
-}
-impl<'a> Display for Token<'a> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    fn fmt_impl(&self, f: &mut Formatter<'_>, escaped: bool) -> fmt::Result {
+        use std::fmt::Write;
         if let Some(text) = self.static_text() {
-            f.write_str(text)
+            if escaped {
+                write!(f, "{:?}", text)
+            } else {
+                f.write_str(text)
+            }
         } else {
+            let should_write_quotes = escaped && match *self {
+                Token::StringLiteral(_) => false,
+                _ => true
+            };
+            if should_write_quotes {
+                f.write_char('"')?;
+            }
             match *self {
                 Token::IntegerLiteral(val) => {
                     write!(f, "{}", val)
@@ -765,7 +774,11 @@ impl<'a> Display for Token<'a> {
                     write!(f, "{}", big_int)
                 },
                 Token::StringLiteral(lit) => {
-                    write!(f, "{}", lit)
+                    if escaped {
+                        write!(f, "String({})", lit)
+                    } else {
+                        write!(f, "{}", lit)
+                    }
                 }
                 Token::Ident(id) => {
                     write!(f, "{}", id.text())
@@ -789,10 +802,24 @@ impl<'a> Display for Token<'a> {
                      * Just write this as a fallback,
                      * since a panic would be unhelpful.
                      */
-                     write!(f, "Token::Unreachable({:?})", self)
-                 }
+                    write!(f, "Token::Unreachable({:?})", self)
+                }
+            }?;
+            if should_write_quotes {
+                f.write_char('"')?;
             }
+            Ok(())
         }
+    }
+}
+impl<'a> Debug for Token<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.fmt_impl(f, true)
+    }
+}
+impl<'a> Display for Token<'a> {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        self.fmt_impl(f, false)
     }
 }
 
