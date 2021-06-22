@@ -43,6 +43,28 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 while !self.parser.is_end_of_file() {
                     let stmt = self.statement()?;
                     stmts.push(stmt)?;
+                    if !self.parser.is_empty() {
+                        /*
+                         * Really, this should only happen if we have a logic error on our part.
+                         * I don't want to drag in all the Debug machinery for the AST,
+                         * so we don't necessity need to give the best error messages ^_^
+                         */
+                        return Err(if cfg!(debug_assertions) {
+                            self.parser.unexpected(&format_args!(
+                                "an empty buffer after statement {:#?}",
+                                stmt
+                            ))
+                        } else {
+                            self.parser.unexpected(&"an empty buffer after statement")
+                        })
+                    }
+                    if !self.parser.is_end_of_file() {
+                        /*
+                        * If we haven't reached the EOF,
+                        * then try and consume the next line
+                        */
+                        self.parser.next_line()?;
+                    }
                 }
                 Ok(PythonAst::Module {
                     body: stmts.into_slice(),
