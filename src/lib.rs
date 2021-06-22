@@ -40,7 +40,9 @@ pub fn parse_text<'a, 'src>(
         text
     );
     let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool, );
-    let res= parser.parse_top_level(mode)?;
+    let res= parser.parse_top_level(mode).map_err(|err| {
+        err.with_line_numbers(parser.parser.line_number_tracker())
+    })?;
     parser.parser.expect_end_of_input()?;
     // give back the symbol table we took
     *symbol_table = parser.parser.into_lexer().into_symbol_table();

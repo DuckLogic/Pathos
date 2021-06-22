@@ -19,8 +19,8 @@ use std::hash::Hash;
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serialize", derive(SerializeDisplay, DeserializeFromStr))]
 pub struct Span {
-    pub start: usize,
-    pub end: usize
+    pub start: u64,
+    pub end: u64
 }
 impl Span {
     /// Create a dummy span for debugging purposes
@@ -62,8 +62,8 @@ pub enum SpanParseError {
     },
     #[error("The end {end} must be <= start {start} ")]
     EndBeforeStart {
-        end: usize,
-        start: usize
+        end: u64,
+        start: u64
     }
 }
 impl FromStr for Span {
@@ -85,8 +85,8 @@ impl FromStr for Span {
             },
             None => return Err(SpanParseError::MissingDots)
         };
-        let start = usize::from_str(&s[..dot_start_index])?;
-        let end = usize::from_str(&s[dot_end_index..])?;
+        let start = u64::from_str(&s[..dot_start_index])?;
+        let end = u64::from_str(&s[dot_end_index..])?;
         if start <= end {
             Ok(Span { start, end })
         } else {

@@ -106,6 +106,7 @@ use logos::{Logos, Lexer};
 use crate::ast::Span;
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use crate::ast::ident::{SymbolTable, Symbol};
+use crate::parse::errors::LineNumberTracker;
 
 /// A python identifier
 ///
@@ -209,6 +210,8 @@ pub struct PythonLexer<'src, 'arena> {
     pending_indentation_change: isize,
     indent_stack: Vec<usize>,
     starting_line: bool,
+    pub line_start_position: u64,
+    pub line_number_tracker: Option<LineNumberTracker>
 }
 impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -242,7 +245,9 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             symbol_table,
             pending_indentation_change: 0,
             indent_stack: vec![0],
-            starting_line: true
+            starting_line: true,
+            line_start_position: 0,
+            line_number_tracker: None
         }
     }
     pub fn reset(&mut self, text: &'src str) {
@@ -250,6 +255,10 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         self.pending_indentation_change = 0;
         self.indent_stack.clear();
         self.indent_stack.push(0);
+        self.line_start_position = 0;
+        if let Some(ref mut tracker) = self.line_number_tracker {
+            tracker.reset();
+        }
         self.starting_line = true;
     }
     pub fn lex_all(&mut self, text: &'src str) -> Result<Vec<Token<'arena>>, LexError> {
@@ -263,7 +272,26 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     #[inline]
     pub fn current_span(&self) -> Span {
         let raw = self.raw_lexer.span();
-        Span { start: raw.start, end: raw.end }
+        let offset = self.line_start_position;
+        Span {
+            start: offset.saturating_add(raw.start as u64),
+            end: offset.saturating_add(raw.end as u64)
+        }
+    }
+    /// Mark the current token as a newline
+    fn mark_as_newline(&mut self) {
+        #[cfg(debug_assertions)] {
+            let src_text = self.raw_lexer.slice();
+            debug_assert!(
+                &["\n", "\r\n", "\r"].contains(&src_text),
+                "Invalid line start: {:?}",
+                src_text
+            );
+        }
+        let next_line_start = self.current_span().end;
+        if let Some(ref mut tracker) = self.line_number_tracker {
+            tracker.mark_line_start(next_line_start);
+        }
     }
     pub fn create_ident(&mut self, text: &'src str) -> Result<Symbol<'arena>, AllocError> {
         self.symbol_table.alloc(text)
@@ -331,7 +359,12 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                 None => return Ok(None) // EOF
             };
             return Ok(Some(translate_tokens!(token;
+                EscapedNewline => {
+                    self.mark_as_newline();
+                    continue 'yum;
+                },
                 RawNewline => {
+                    self.mark_as_newline();
                     self.starting_line = true;
                     // TODO: Do we need to do anything else?
                     Token::Newline
@@ -959,8 +992,9 @@ enum RawToken<'src> {
     /// NOTE: This is implicitly skipped if there is a backslash
     /// right before it.
     #[regex(r"(\n|\r\n)")]
-    #[regex(r"\\(\n|\r\n)", logos::skip)]
     RawNewline,
+    #[regex(r"\\(\n|\r\n)", logos::skip)]
+    EscapedNewline
 }
 
 impl<'src> RawToken<'src> {
