@@ -39,11 +39,34 @@ impl Default for SeparatorParseState {
         SeparatorParseState::AwaitingStart
     }
 }
-pub trait EndFunc<'src, 'a> {
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
-    fn description(&self) -> &'static str;
+pub struct EndFunc<'src, 'a, F, D: Display> {
+    func: F,
+    description: D,
+    marker: PhantomData<fn(&'src (), &'a ())>
 }
-impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
+impl<'src, 'a, F: FnMut(&Parser<'src, 'a>) -> bool, D: Display> EndFunc<'src, 'a, F, D> {
+    #[inline]
+    pub fn new(description: D, func: F) -> Self {
+        EndFunc { func, description, marker: PhantomData }
+    }
+}
+impl<'src, 'a, F, D> EndPredicate<'src, 'a> for EndFunc<'src, 'a, F, D> where F: FnMut(&Parser<'src, 'a>) -> bool, D: Display {
+    #[inline]
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+        (self.func)(parser)
+    }
+    type Desc = D;
+    #[inline]
+    fn description(&self) -> &D {
+        &self.description
+    }
+}
+pub trait EndPredicate<'src, 'a> {
+    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
+    type Desc: Display;
+    fn description(&self) -> &Self::Desc;
+}
+impl<'src, 'a> EndPredicate<'src, 'a> for Token<'a> {
     #[inline]
     fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
         match parser.peek() {
@@ -51,41 +74,43 @@ impl<'src, 'a> EndFunc<'src, 'a> for Token<'a> {
             None => false
         }
     }
+    type Desc = Self;
     #[inline]
-    fn description(&self) -> &'static str {
-        self.static_text().unwrap_or("ending")
-    }
-}
-impl<'src, 'a, Func> EndFunc<'src, 'a> for Func
-    where Func: FnMut(&Parser<'src, 'a>) -> bool {
-    #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
-        (*self)(parser)
-    }
-    #[inline]
-    fn description(&self) -> &'static str {
-        "ending"
+    fn description(&self) -> &Self {
+        self
     }
 }
 pub trait IParser<'src, 'a>: Sized + Debug {
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
     fn as_parser(&self) -> &Parser<'src, 'a>;
     #[inline]
-    fn parse_terminated<'p, T, F>(
+    fn parse_seperated<'p, T, F>(
         &'p mut self,
         sep: Token<'a>,
         ending: Token<'a>,
-        parse_func: F
+        parse_func: F,
+        config: ParseSeperatedConfig
     ) -> ParseSeperated<'p, 'src, 'a, Self, F, Token<'a>, T>
         where F: FnMut(&mut Self) -> Result<T, ParseError> {
         ParseSeperated::new(
             self, parse_func,
             sep,
             ending,
-            true,
+            config
         )
     }
-
+}
+/// Configuration for [ParseSeperated]
+#[derive(Copy, Clone, Debug)]
+pub struct ParseSeperatedConfig {
+    /// Allow an extra (redundant) separator
+    /// to terminate the list of parsed items.
+    ///
+    /// For example: `(a, b, c,)` has a redundant comma
+    /// terminating the tuple.
+    pub allow_terminator: bool,
+    /// Allow input to span multiple lines
+    pub allow_multi_line: bool
 }
 #[derive(Debug)]
 pub struct ParseSeperated<
@@ -98,18 +123,13 @@ pub struct ParseSeperated<
     pub separator: Token<'a>,
     pub end_func: E,
     pub state: SeparatorParseState,
-    /// Allow an extra (redundant) separator
-    /// to terminate the list of parsed items.
-    ///
-    /// For example: `(a, b, c,)` has a redundant comma
-    /// terminating the tuple.
-    pub allow_terminator: bool,
     pub marker: PhantomData<fn(&'src ()) -> T>,
+    pub config: ParseSeperatedConfig
 }
 impl<'p, 'src, 'a,
     P: IParser<'src, 'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a>, T
+    E: EndPredicate<'src, 'a>, T
 > ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     #[inline]
     pub fn new(
@@ -117,13 +137,13 @@ impl<'p, 'src, 'a,
         parse_func: ParseFunc,
         separator: Token<'a>,
         end_func: E,
-        allow_terminator: bool,
+        config: ParseSeperatedConfig
     ) -> Self {
         ParseSeperated {
             parser, parse_func,
             separator,
             end_func, state: SeparatorParseState::AwaitingStart,
-            allow_terminator, marker: PhantomData,
+            config, marker: PhantomData,
         }
     }
     /// The error to give if we don't encounter
@@ -137,7 +157,7 @@ impl<'p, 'src, 'a,
     fn unexpected_separator(&self) -> ParseError {
         self.parser.as_parser().unexpected(
             &format_args!(
-                "Expected {:?} or {}",
+                "Expected {:?} or ending {}",
                 self.separator.static_text().unwrap_or("<sep>"),
                 self.end_func.description()
             )
@@ -157,7 +177,7 @@ impl<'p, 'src, 'a,
 impl<'p, 'src, 'a: 'p,
     P: IParser<'src, 'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndFunc<'src, 'a>, T
+    E: EndPredicate<'src, 'a>, T
 > Iterator for ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
     type Item = Result<T, ParseError>;
     #[inline]
@@ -179,6 +199,49 @@ impl<'p, 'src, 'a: 'p,
                     // fallthrough to parse item
                 },
                 SeparatorParseState::AwaitingNext => {
+                    if self.config.allow_multi_line {
+                        /*
+                         * If we're allowing multi-line input,
+                         * and we've already seen a separator,
+                         * implicitly fetch a newline if we need to.
+                         * This corresponds to the implicit line joining logic described here:
+                         * https://docs.python.org/3.11/reference/lexical_analysis.html#implicit-line-joining
+                         * To quote, "Expressions in parentheses, square brackets or curly braces
+                         * can be split over more than one physical line without using backslashes"
+                         */
+                        let parser = self.parser.as_mut_parser();
+                        let should_eat_more = match parser.peek() {
+                            Some(Token::Newline) => {
+                                // Implicitly consume line and fetch more input
+                                match parser.skip() {
+                                    Ok(_) => {},
+                                    Err(e) => return Some(Err(e))
+                                };
+                                if parser.is_empty() {
+                                    true
+                                } else {
+                                    continue // more input -> continue outer loop
+                                }
+                            },
+                            None => {
+                                true
+                            },
+                            _ => false // fallthrough to regular parse
+                        };
+                        if should_eat_more {
+                            // Implicitly fetch more input
+                            match parser.next_line() {
+                                Ok(Some(_)) => {
+                                    // More input
+                                    continue
+                                },
+                                Ok(None) => {
+                                    // fallthrough to regular parse, which handles EOF condition
+                                },
+                                Err(cause) => return Some(Err(cause))
+                            }
+                        }
+                    }
                     /*
                      * We've already seen a separator
                      * and are ready to parse the next item.
@@ -188,7 +251,7 @@ impl<'p, 'src, 'a: 'p,
                      * If `!self.allow_terminator`, we dont allow trailing commas
                      * so seeing an ending `]` would be error.
                      */
-                    if self.allow_terminator && self.maybe_end_parse() {
+                    if self.config.allow_terminator && self.maybe_end_parse() {
                         // Redundant comma
                         return None;
                     }

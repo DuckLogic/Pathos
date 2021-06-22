@@ -18,7 +18,7 @@ use crate::vec;
 use super::parser::{IParser, SpannedToken};
 use super::PythonParser;
 use crate::parse::ArgumentParseOptions;
-use crate::parse::parser::{EndFunc, ParseSeperated};
+use crate::parse::parser::{EndFunc, EndPredicate, ParseSeperated, ParseSeperatedConfig};
 use arrayvec::ArrayVec;
 use crate::ast::ident::Symbol;
 use std::cell::Cell;
@@ -316,7 +316,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// Therefore, we keep this function public to allow those two special-cases.
     ///
     /// See docs: <https://docs.python.org/3.10/reference/expressions.html#yield-expressions>
-    pub fn parse_yield_expr(&mut self, mut end_func: impl EndFunc<'src, 'a>) -> Result<Expr<'a>, ParseError> {
+    pub fn parse_yield_expr(&mut self, mut end_func: impl EndPredicate<'src, 'a>) -> Result<Expr<'a>, ParseError> {
         let original_keyword_span = self.parser.expect(Token::Yield)?.span;
         let start = original_keyword_span.start;
         if let Some(Token::From) = self.parser.peek() {
@@ -347,7 +347,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     self.parser.expect(Token::Comma)?;
                     let mut iter = ParseSeperated::new(
                         self, |p| p.expression(),
-                        Token::Comma, end_func, true
+                        Token::Comma, end_func, ParseSeperatedConfig {
+                            allow_multi_line: false,
+                            allow_terminator: true
+                        }
                     );
                     while let Some(e) = iter.next().transpose()? {
                         elements.push(e)?;
@@ -460,9 +463,13 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let mut keyword_args = Vec::new(self.arena);
         let mut keyword_varargs = None;
         let first_keyword_arg_name: Cell<Option<Symbol<'a>>> = Cell::new(None);
-        let mut iter = self.parse_terminated(
+        let mut iter = self.parse_seperated(
             Token::Comma, Token::CloseParen,
-            |parser| parser.parse_call_arg(first_keyword_arg_name.get())
+            |parser| parser.parse_call_arg(first_keyword_arg_name.get()),
+            ParseSeperatedConfig {
+                allow_multi_line: true,
+                allow_terminator: true
+            }
         );
         loop {
             match iter.next() {
@@ -802,9 +809,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Ok(ExprList::Single { arena: self.arena, expr: first })
         }
     }
-    pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_func: impl EndFunc<'src, 'a>, expected_ending: &dyn Display) -> Result<ExprList<'a>, ParseError> {
+    pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_pred: impl EndPredicate<'src, 'a>) -> Result<ExprList<'a>, ParseError> {
         // TODO: Use parse_seperated????
-        if allow_empty && end_func.should_end(&self.parser) {
+        if allow_empty && end_pred.should_end(&self.parser) {
             return Ok(ExprList::Empty)
         }
         let first = self.parse_target()?;
@@ -812,9 +819,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             let mut v = vec![in self.arena; first]?;
             while let Some(Token::Comma) = self.parser.peek() {
                 self.parser.skip()?;
-                if end_func.should_end(&self.parser) { break; }
+                if end_pred.should_end(&self.parser) { break; }
                 v.push(self.expression().map_err(|err| {
-                    err.with_expected_msg(format_args!("either an expression or {}", expected_ending))
+                    err.with_expected_msg(format_args!("either an expression or {}", end_pred.description()))
                 })?)?;
             }
             Ok(ExprList::Tuple {
@@ -967,13 +974,17 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 }
             }
             let mut elements: Vec<(Expr<'a>, Expr<'a>)> = vec![in self.arena; (first, first_value.unwrap())]?;
-            for val in self.parse_terminated(
+            for val in self.parse_seperated(
                 Token::Comma, Token::CloseBrace,
                 |parser| {
                     let key = parser.expression()?;
                     parser.parser.expect(Token::Colon)?;
                     let value = parser.expression()?;
                     Ok((key, value))
+                },
+                ParseSeperatedConfig {
+                    allow_multi_line: true,
+                    allow_terminator: true
                 }
             ) {
                 elements.push(val?)?;
@@ -1018,10 +1029,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 }
             }
             let mut elements = vec![in self.arena; first]?;
-            for val in self.parse_terminated(
+            for val in self.parse_seperated(
                 Token::Comma,
                 collection_type.closing_token(),
-                |parser| parser.expression()
+                |parser| parser.expression(),
+                ParseSeperatedConfig { allow_terminator: true, allow_multi_line: true }
             ) {
                 elements.push(val?)?;
             }

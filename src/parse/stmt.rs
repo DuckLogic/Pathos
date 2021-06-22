@@ -1,14 +1,15 @@
 use crate::parse::PythonParser;
-use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath};
+use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule};
 use crate::lexer::Token;
 use crate::ParseError;
 use crate::ast::{Spanned, Span, AstNode};
-use crate::parse::parser::{ParseSeperated, Parser};
+use crate::parse::parser::{ParseSeperated, Parser, IParser, EndFunc, ParseSeperatedConfig};
 /*
  * Override the global `std::alloc::Vec` with our `crate::alloc::Vec`.
  * This is needed because we use a limiting, arena-allocator.
  */
 use crate::alloc::Vec;
+use std::num::NonZeroU32;
 
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn statement(&mut self) -> Result<Stmt<'a>, ParseError> {
@@ -32,8 +33,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Some(Token::Return) => {
                 let start_span = self.parser.expect(Token::Return)?.span;
                 let exprs  = self.parse_expression_list(
-                    true, |parser: &Parser| parser.is_newline(),
-                    &"newline"
+                    true, EndFunc::new("newline", |parser: &Parser| parser.is_newline()),
                 )?;
                 self.stmt(StmtKind::Return {
                     span: Span { start: start_span.start, end: match exprs.span() {
@@ -44,7 +44,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 })?
             }
             Some(Token::Yield) => {
-                let expr = self.parse_yield_expr(|parser: &Parser| parser.is_newline())?;
+                let expr = self.parse_yield_expr(EndFunc::new(
+                    "newline",
+                    |parser| parser.is_newline()
+                ))?;
                 self.stmt(StmtKind::Expr {
                     value: expr, span: expr.span()
                 })?
@@ -97,6 +100,36 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 self.arena.alloc(StmtKind::Import {
                     span, names: aliases.into_slice()
                 })?
+            },
+            Some(Token::From) => {
+                let start = self.parser.expect(Token::From)?.span.start;
+                let relative_module = self.parse_relative_import_module()?;
+                self.parser.expect(Token::Import)?;
+                let (inside_parens, closing_token) = if matches!(self.parser.peek(), Some(Token::OpenParen)) {
+                    self.parser.skip()?;
+                    (true, Token::CloseParen)
+                } else {
+                    (false, Token::Newline)
+                };
+                let mut end = relative_module.span().end;
+                let mut aliases = Vec::new(self.arena);
+                let mut iter = self.parse_seperated(
+                    Token::Comma, closing_token, |parser| {
+                        parser.parse_import_alias(|parser| parser.parse_ident())
+                    },
+                    ParseSeperatedConfig {
+                        allow_multi_line: inside_parens,
+                        allow_terminator: inside_parens
+                    }
+                );
+                while let Some(item) = iter.next().transpose()? {
+                    end = item.span.end;
+                    aliases.push(item)?;
+                }
+                self.stmt(StmtKind::ImportFrom {
+                    module: relative_module, names: aliases.into_slice(),
+                    span: Span { start, end }
+                })?
             }
             _ => return Err(self.parser.unexpected(&"a statement"))
         };
@@ -113,6 +146,32 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 unreachable!("Already consumed newline")
             }
             _ => Err(self.parser.unexpected(&"an end of line"))
+        }
+    }
+    fn parse_relative_import_module(&mut self) -> Result<RelativeModule<'a>, ParseError> {
+        let mut level = 0u32;
+        let Span { start, mut end } = self.parser.current_span();
+        while matches!(self.parser.peek(), Some(Token::Period)) {
+            end = self.parser.current_span().end;
+            self.parser.skip()?;
+            level += 1;
+        }
+        if level == 0 {
+            Ok(RelativeModule::Absolute {
+                path: self.parse_module_path()?
+            })
+        } else {
+            let relative_path = if matches!(self.parser.peek(), Some(Token::Ident(_))) {
+                let p = self.parse_module_path()?;
+                end = p.span().end;
+                Some(p)
+            } else {
+                None
+            };
+            Ok(RelativeModule::Relative {
+                relative_path, level: NonZeroU32::new(level).unwrap(),
+                span: Span { start, end }
+            })
         }
     }
     fn parse_import_alias<N, F>(&mut self, mut inner_parser: F) -> Result<Alias<N>, ParseError>
@@ -141,8 +200,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
         let mut iter = ParseSeperated::new(
             self, |parser| parser.parse_ident(),
-            Token::Period, |parser: &Parser| !matches!(parser.peek(), Some(Token::Ident(_))),
-            false
+            Token::Period, EndFunc::new("", |parser: &Parser| !matches!(parser.peek(), Some(Token::Ident(_)))),
+            ParseSeperatedConfig {
+                allow_terminator: false,
+                allow_multi_line: false
+            }
         );
         while let Some(item) = iter.next().transpose()? {
             items.push(item)?;

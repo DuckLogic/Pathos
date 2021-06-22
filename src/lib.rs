@@ -39,7 +39,7 @@ pub fn parse_text<'a, 'src>(
         std::mem::replace(symbol_table, SymbolTable::new(arena)), // take it from them
         text
     );
-    let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool, );
+    let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool);
     let res= parser.parse_top_level(mode).map_err(|err| {
         err.with_line_numbers(parser.parser.line_number_tracker())
     })?;
