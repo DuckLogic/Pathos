@@ -107,6 +107,7 @@ use crate::ast::Span;
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use crate::ast::ident::{SymbolTable, Symbol};
 use crate::parse::errors::LineNumberTracker;
+use crate::ast::tree::Operator;
 
 /// A python identifier
 ///
@@ -503,7 +504,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                         (QuoteStyle::SingleLong, QuoteStyle::SingleLong) |
                         (QuoteStyle::DoubleLong, QuoteStyle::DoubleLong) => {
                             // We've encountered our closing
-                            self.raw_lexer.bump(relative_index + 1);
+                            self.raw_lexer.bump(relative_index + quote.len());
                             return Ok(&*self.arena.alloc(StringLiteral {
                                 style, value: buffer.into_str()
                             })?)
@@ -660,6 +661,26 @@ pub enum Token<'arena> {
     Newline,
 }
 impl<'a> Token<'a> {
+    /// If this token is an augmented assignment operator (`+=`, `*=`, etc),
+    /// then get the corresponding [Operator]
+    pub fn aug_assign_op(&self) -> Option<Operator> {
+        match *self {
+            Token::PlusEquals => Some(Operator::Add),
+            Token::MinusEquals => Some(Operator::Sub),
+            Token::StarEquals => Some(Operator::Mult),
+            Token::AtEquals => Some(Operator::MatMult),
+            Token::SlashEquals => Some(Operator::Div),
+            Token::DoubleSlashEquals => Some(Operator::FloorDiv),
+            Token::PercentEquals => Some(Operator::Mod),
+            Token::DoubleStarEquals => Some(Operator::Pow),
+            Token::RightShiftEquals => Some(Operator::RShift),
+            Token::LeftShiftEquals => Some(Operator::LShift),
+            Token::AndEquals => Some(Operator::BitAnd),
+            Token::XorEquals => Some(Operator::BitXor),
+            Token::OrEquals => Some(Operator::BitOr),
+            _ => None
+        }
+    }
     #[inline]
     fn static_text(&self) -> Option<&'static str> {
         Some(match *self {
@@ -1259,7 +1280,7 @@ enum StringPart<'src> {
     TripleDoubleQuote,
     #[token(r###"'''"###)]
     TripleSingleQuote,
-    #[regex(r#"[^\\\n"]+"#)]
+    #[regex(r#"[^\\\n"']+"#)]
     RegularText(&'src str),
     #[error]
     Error

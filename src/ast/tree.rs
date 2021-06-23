@@ -309,6 +309,31 @@ pub enum StmtKind<'a> {
         span: Span,
     },
 }
+impl<'a> ExprKind<'a> {
+    /// Return if the expression a 'target' expression
+    ///
+    /// Target expressions are a restricted subset of regular expressions,
+    /// and are often handled differently in the parser.
+    ///
+    /// See docs for the official rules on targets:
+    /// <https://docs.python.org/3.10/reference/simple_stmts.html#assignment-statements>
+    #[inline]
+    pub fn is_target(&self) -> bool {
+        self.is_augmented_assignment_target() ||
+            matches!(self, ExprKind::Starred { .. } | ExprKind::List { .. } | ExprKind::Tuple { .. })
+    }
+    /// Return if the expression is an 'augmented assignment target'
+    ///
+    /// This is a special-case of targets,
+    /// so it can only return true if [ExprKind::is_target] is also true
+    ///
+    /// See docs for the official rules on these expressions:
+    /// <https://docs.python.org/3.11/reference/simple_stmts.html#augmented-assignment-statements>
+    #[inline]
+    pub fn is_augmented_assignment_target(&self) -> bool {
+        matches!(self, ExprKind::Name { .. } | ExprKind::Attribute { .. } | ExprKind::Subscript { .. })
+    }
+}
 impl<'a> AstNode for StmtKind<'a> {}
 impl<'a> Spanned for StmtKind<'a> {
     fn span(&self) -> Span {

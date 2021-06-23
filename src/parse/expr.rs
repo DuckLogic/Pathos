@@ -4,7 +4,6 @@
 //!
 //! See also [this (C) pratt parser, implemented in crafting interpreters](http://craftinginterpreters.com/compiling-expressions.html#parsing-prefix-expressions)
 //! See also [this example code](https://github.com/munificent/bantam)
-use std::fmt::Display;
 use std::ops::{Add, Sub};
 
 use crate::alloc::{Allocator, AllocError, Vec};
@@ -22,6 +21,8 @@ use crate::parse::parser::{EndFunc, EndPredicate, ParseSeperated, ParseSeperated
 use arrayvec::ArrayVec;
 use crate::ast::ident::Symbol;
 use std::cell::Cell;
+use std::iter::FusedIterator;
+use std::option::Option::None;
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -763,8 +764,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         } else { false };
         self.parser.expect(Token::For)?;
         let target = self.parse_target_list(
-            &mut |parser| parser.parser.peek() == Some(Token::In),
-            &"'in'"
+            EndFunc::new("in", |parser| parser.peek() == Some(Token::In)),
         )?.with_implicit_tuple()?.unwrap();
         self.parser.expect(Token::In)?;
         // For the precedence of an iterator, we can have anything with higher precedence than a conditional
@@ -789,48 +789,59 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// The closure is necessary to avoid backtracking.
     ///
     /// Implicitly converts a list to a tuple expression (with the appropriate [ExprContext])
-    pub fn parse_target_list(&mut self, should_end: &mut dyn FnMut(&Self) -> bool, expected_ending: &dyn Display) -> Result<ExprList<'a>, ParseError> {
-        // TODO: Use parse_seperated?????
+    pub fn parse_target_list<P>(&mut self, mut should_end: P) -> Result<ExprList<'a>, ParseError> where P: EndPredicate<'src, 'a> {
         let first = self.parse_target()?;
-        if let Some(Token::Comma) = self.parser.peek() {
-            let mut v = vec![in self.arena; first]?;
-            while let Some(Token::Comma) = self.parser.peek() {
-                self.parser.skip()?;
-                if should_end(self) { break; }
-                v.push(self.parse_target().map_err(|err| {
-                    err.with_expected_msg(format_args!("either an expression or {}", expected_ending))
-                })?)?;
-            }
-            Ok(ExprList::Tuple {
-                arena: self.arena, ctx: self.expression_context,
-                slice: v.into_slice()
+        if should_end.should_end(&self.parser) {
+            return Ok(ExprList::Single {
+                arena: self.arena,
+                expr: first
             })
-        } else {
-            Ok(ExprList::Single { arena: self.arena, expr: first })
         }
+        let mut res = vec![in self.arena; first]?;
+        let mut iter = self.parse_seperated(
+            Token::Comma,
+            should_end,
+            |parser| parser.parse_target(),
+            ParseSeperatedConfig {
+                allow_multi_line: false,
+                allow_terminator: true
+            }
+        );
+        while let Some(val) = iter.next().transpose()? {
+            res.push(val)?;
+        }
+        Ok(ExprList::Tuple {
+            arena: self.arena, ctx: self.expression_context,
+            slice: res.into_slice()
+        })
     }
     pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_pred: impl EndPredicate<'src, 'a>) -> Result<ExprList<'a>, ParseError> {
         // TODO: Use parse_seperated????
         if allow_empty && end_pred.should_end(&self.parser) {
             return Ok(ExprList::Empty)
         }
-        let first = self.parse_target()?;
-        if let Some(Token::Comma) = self.parser.peek() {
-            let mut v = vec![in self.arena; first]?;
-            while let Some(Token::Comma) = self.parser.peek() {
-                self.parser.skip()?;
-                if end_pred.should_end(&self.parser) { break; }
-                v.push(self.expression().map_err(|err| {
-                    err.with_expected_msg(format_args!("either an expression or {}", end_pred.description()))
-                })?)?;
-            }
-            Ok(ExprList::Tuple {
-                arena: self.arena, ctx: self.expression_context,
-                slice: v.into_slice()
-            })
-        } else {
-            Ok(ExprList::Single { arena: self.arena, expr: first })
+        let first = self.expression()?;
+        if end_pred.should_end(&self.parser) {
+            return Ok(ExprList::Single { arena: self.arena, expr: first })
         }
+        let mut res = vec![in self.arena; first]?;
+        let mut iter = self.parse_seperated(
+            Token::Comma,
+            end_pred,
+            |parser| parser.parse_target(),
+            ParseSeperatedConfig {
+                allow_multi_line: false, // TODO: We should probably leave this up to the caller
+                allow_terminator: true
+            }
+        );
+        while let Some(item) = iter.next().transpose()? {
+            res.push(item)?;
+        }
+        Ok(ExprList::Tuple {
+            slice: res.into_slice(),
+            arena: self.arena,
+            ctx: self.expression_context
+        })
     }
     /// Parses a target expression
     ///
@@ -1060,7 +1071,55 @@ pub enum ExprList<'a> {
         slice: &'a [Expr<'a>]
     }
 }
+pub enum ExprListIter<'a> {
+    Empty,
+    Single(Expr<'a>),
+    Slice(std::slice::Iter<'a, Expr<'a>>)
+}
+impl<'a> Iterator for ExprListIter<'a> {
+    type Item = Expr<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        match *self {
+            ExprListIter::Empty => None,
+            ExprListIter::Single(value) => {
+                *self = ExprListIter::Empty;
+                Some(value)
+            }
+            ExprListIter::Slice(ref mut inner) => inner.next().cloned()
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = match *self {
+            ExprListIter::Empty => 0,
+            ExprListIter::Single(_) => 1,
+            ExprListIter::Slice(ref iter) => iter.len()
+        };
+        (len, Some(len))
+    }
+}
+impl<'a> FusedIterator for ExprListIter<'a> {}
+impl<'a> ExactSizeIterator for ExprListIter<'a> {}
 impl<'a> ExprList<'a> {
+    #[inline]
+    pub fn iter(&self) -> ExprListIter<'a> {
+        match *self {
+            ExprList::Empty => ExprListIter::Empty,
+            ExprList::Single { expr, .. } => ExprListIter::Single(expr),
+            ExprList::Tuple { slice, .. } => ExprListIter::Slice(slice.iter())
+        }
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        match *self {
+            ExprList::Empty => 0,
+            ExprList::Single { .. } => 1,
+            ExprList::Tuple { slice, .. } => slice.len()
+        }
+    }
     #[inline]
     pub fn span(&self) -> Option<Span> {
         match *self {

@@ -60,6 +60,13 @@ impl<'arena, T> Vec<'arena, T> {
         }
     }
     #[inline]
+    pub fn from_allocated_slice(arena: &'arena Allocator, slice: &'arena [T]) -> Self {
+        Vec {
+            arena, capacity: slice.len(),
+            len: slice.len(), ptr: unsafe { NonNull::new_unchecked(slice.as_ptr() as *mut T) }
+        }
+    }
+    #[inline]
     pub fn with_capacity(arena: &'arena Allocator, capacity: usize) -> Result<Self, AllocError> {
         let mut res = Vec::new(arena);
         res.reserve(capacity)?;

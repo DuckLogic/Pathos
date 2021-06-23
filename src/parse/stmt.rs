@@ -1,5 +1,5 @@
 use crate::parse::{PythonParser, ArgumentParseOptions, SpannedToken};
-use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind};
+use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
 use crate::lexer::Token;
 use crate::ParseError;
 use crate::ast::{Spanned, Span, AstNode};
@@ -10,6 +10,9 @@ use crate::parse::parser::{ParseSeperated, Parser, IParser, EndFunc, ParseSepera
  */
 use crate::alloc::Vec;
 use std::num::NonZeroU32;
+use crate::parse::expr::ExprList;
+use crate::parse::errors::ParseErrorKind;
+use crate::vec;
 
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn statement(&mut self) -> Result<Stmt<'a>, ParseError> {
@@ -22,8 +25,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Some(Token::Del) => {
                 let start_span = self.parser.expect(Token::Del)?.span.start;
                 let targets = self.parse_target_list(
-                    &mut |parser| parser.parser.is_newline(),
-                    &"newline"
+                    EndFunc::new("newline", |parser| parser.is_newline()),
                 )?;
                 self.stmt(StmtKind::Delete {
                     span: Span { start: start_span, end: targets.span().unwrap().start },
@@ -133,8 +135,11 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     module: relative_module, names: aliases.into_slice(),
                     span: Span { start, end }
                 })?
+            },
+            Some(_) => {
+                self.parse_statement_fallback()?
             }
-            _ => return Err(self.parser.unexpected(&"a statement"))
+            None => return Err(self.parser.unexpected(&"a statement"))
         };
         match self.parser.peek() {
             Some(Token::Newline) => {
@@ -150,6 +155,121 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
             _ => Err(self.parser.unexpected(&"an end of line"))
         }
+    }
+    /// Fallback for parsing statements,
+    /// that handles the general case of expressions and assignments.
+    fn parse_statement_fallback(&mut self) -> Result<Stmt<'a>, ParseError> {
+        let first = self.parse_expression_list(false, EndFunc::new(
+            "newline, '=', or augmented assignment ('+=', '*=', etc)",
+            |parser| {
+            match parser.peek() {
+                Some(Token::Newline) | Some(Token::Equals) | Some(Token::Colon) => true,
+                Some(other) if other.aug_assign_op().is_some() => true,
+                _ => false // Just plain invalid
+            }
+        }))?;
+        // Lets come to a decision
+        match self.parser.peek() {
+            Some(Token::Newline) => {
+                // done
+                Ok(self.stmt(StmtKind::Expr {
+                    span: first.span().unwrap(),
+                    value: first.with_implicit_tuple()?.unwrap()
+                })?)
+            },
+            Some(Token::Equals) | Some(Token::Colon) => {
+                self.parse_assignment_statement(first)
+            },
+            Some(tk) if tk.aug_assign_op().is_some() => {
+                let op = tk.aug_assign_op().unwrap();
+                let target = Self::check_valid_augmented_assign_target(first, "augmented assignment")?;
+                self.parser.expect(tk)?;
+                let value = self.expression()?;
+                self.stmt(StmtKind::AugAssign {
+                    span: Span { start: target.span().start, end: value.span().end },
+                    op, target, value
+                })
+            },
+            _ => unreachable!()
+        }
+
+    }
+    fn check_valid_augmented_assign_target(l: ExprList<'a>, context: &'static str) -> Result<Expr<'a>, ParseError> {
+        let first_span = l.span().unwrap();
+        if let Some(single) = l.single() {
+            if !single.is_augmented_assignment_target() {
+                return Err(ParseError::builder(first_span, ParseErrorKind::InvalidExpression)
+                    .expected(format_args!("a single target for {}", context))
+                    .actual("a target that is a collection")
+                    .build())
+            }
+            Ok(single)
+        } else {
+            Err(ParseError::builder(first_span, ParseErrorKind::InvalidExpression)
+                .expected(format_args!("a single target for {}", context))
+                .actual(format_args!("{} targets", l.len()))
+                .build())
+        }
+    }
+    fn parse_assignment_statement(&mut self, first: ExprList<'a>) -> Result<Stmt<'a>, ParseError> {
+        fn check_valid_target(target: Expr) -> Result<(), ParseError> {
+            if target.is_target() {
+                Ok(())
+            } else {
+                Err(ParseError::builder(target.span(), ParseErrorKind::InvalidExpression)
+                    .expected("a valid assignment target")
+                    .build())
+            }
+        }
+        let first_span = first.span().unwrap();
+        for val in first.iter() {
+            check_valid_target(val)?;
+        }
+        if let Some(Token::Colon) = self.parser.peek() {
+            self.parser.skip()?;
+            let target = Self::check_valid_augmented_assign_target(first, "annotated assignment")?;
+            let annotation = self.expression()?;
+            let value = if let Some(Token::Equals) = self.parser.peek() {
+                self.parser.expect(Token::Equals)?;
+                Some(self.expression()?)
+            } else { None };
+            let end = match value {
+                Some(ref val) => val.span().end,
+                None => annotation.span().end
+            };
+            return Ok(self.stmt(StmtKind::AnnAssign {
+                value, annotation, target,
+                simple: match target {
+                    ExprKind::Name { .. } => true,
+                    _ => false
+                },
+                span: Span { start: first_span.start, end },
+            })?)
+        }
+        self.parser.expect(Token::Equals)?;
+        let mut targets = vec![in self.arena; first.with_implicit_tuple()?.unwrap()]?;
+        let mut assigned_value = loop {
+            let expression_list = self.parse_expression_list(false, EndFunc::new(
+                "newline or another '='",
+                |parser| matches!(parser.peek(), Some(Token::Equals) | Some(Token::Newline))
+            ))?;
+            if let Some(Token::Equals) = self.parser.peek() {
+                self.parser.skip()?;
+                for val in expression_list.iter() {
+                    check_valid_target(val)?;
+                }
+                targets.push(expression_list.with_implicit_tuple()?.unwrap())?;
+                continue
+            } else {
+                break expression_list.with_implicit_tuple()?.unwrap()
+            }
+        };
+        self.stmt(StmtKind::Assign {
+            span: Span { start: first_span.start, end: assigned_value.span().end },
+            targets: &*targets.into_slice(),
+            value: assigned_value,
+            type_comment: None
+        })
     }
     fn parse_decorated(&mut self) -> Result<Stmt<'a>, ParseError> {
         let mut decorators = Vec::new(self.arena);

@@ -104,6 +104,7 @@ impl Display for DetailedSpan {
 #[derive(Debug, Clone)]
 pub enum ParseErrorKind {
     InvalidToken,
+    InvalidExpression,
     AllocationFailed,
     UnexpectedEof,
     UnexpectedEol,
@@ -204,7 +205,10 @@ impl Display for ParseError {
         match self.0.kind {
             ParseErrorKind::InvalidToken => {
                 f.write_str("Invalid token")?;
-            }
+            },
+            ParseErrorKind::InvalidExpression => {
+                f.write_str("Invalid expression")?;
+            },
             ParseErrorKind::AllocationFailed => {
                 f.write_str("Allocation failed")?;
             }
