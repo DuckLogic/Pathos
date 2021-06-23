@@ -4,12 +4,13 @@ use std::path::{PathBuf};
 use anyhow::{Error, Context};
 use std::ffi::OsString;
 use tempfile::NamedTempFile;
-use pathos_python_parser::ast::Allocator;
+use pathos_python_parser::ast::{Allocator, Span};
 use bumpalo::Bump;
 use pathos_python_parser::ast::constants::ConstantPool;
 use pathos_python_parser::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
+use pathos_python_parser::lexer::{PythonLexer, LineNumberTracker};
 
 /// Command line interface to the Pathos python parser
 ///
@@ -32,14 +33,84 @@ enum Opt {
     ///
     /// See the (unofficial) documentation of the official AST:
     /// https://greentreesnakes.readthedocs.io/en/latest/nodes.html
-    DumpAst(DumpAstOptions)
+    DumpAst(DumpAstOptions),
+    /// Tokenize a python source file, without doing any lexing
+    ///
+    /// Should (mostly) be equivalent to the builtin 'tokenize' command
+    Tokenize(TokenizeOptions)
 }
 
 fn main() -> anyhow::Result<()> {
     let options: Opt = Opt::parse();
     match options {
-        Opt::DumpAst(ref inner) => dump_ast(inner)
+        Opt::DumpAst(ref inner) => dump_ast(inner),
+        Opt::Tokenize(ref inner) => tokenize(inner)
     }
+}
+fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
+    let input = options.input.input()?;
+    let text = input.read_input()?;
+    let arena = Allocator::new(Bump::new());
+    let symbols = SymbolTable::new(&arena);
+    let mut lexer = PythonLexer::new(&arena, symbols, &text);
+    if !options.raw_spans {
+        lexer.line_number_tracker = Some(LineNumberTracker::new());
+    }
+    let display_span = |lexer: &PythonLexer, span: Span| {
+        if let Some(ref tracker) = lexer.line_number_tracker {
+            format!("{}", tracker.resolve_span(span))
+        } else {
+            format!("{}", span)
+        }
+    };
+    let mut raw_text = String::new();
+    let mut quoted_text = String::new();
+    while let Some((span, token)) = {
+        let span = lexer.current_span();
+        match lexer.next() {
+            Ok(Some(tk)) => Some((span, tk)),
+            Err(err) => return Err(err).with_context(|| format!("Error at {}", display_span(&lexer, span))),
+            Ok(None) => None
+        }
+    } {
+        use std::fmt::Write;
+        raw_text.clear();
+        write!(&mut raw_text, "{}", token).unwrap();
+        let num_single_quotes = raw_text.chars().filter(|&c| c == '\'').count();
+        let num_double_quotes = raw_text.chars().filter(|&c| c == '"').count();
+        let use_single_quotes = num_single_quotes <= num_double_quotes;
+        quoted_text.clear();
+        if use_single_quotes {
+            quoted_text.push('\'');
+        } else {
+            quoted_text.push('"');
+        }
+        for c in raw_text.chars() {
+            match (c, use_single_quotes) {
+                ('\'', true) => {
+                    quoted_text.push_str("\\'");
+                },
+                ('"', false) => {
+                    quoted_text.push_str("\\\"");
+                }
+                ('"', true) | ('\'', false) |
+                ('A'..='Z', _) | ('a'..='z', _) |
+                ('0'..='9', _) | (' ', _) => {
+                    quoted_text.push(c);
+                }
+                (other, _) => {
+                    quoted_text.extend(other.escape_debug());
+                }
+            }
+        }
+        if use_single_quotes {
+            quoted_text.push('\'');
+        } else {
+            quoted_text.push('"');
+        }
+        println!("{: <20}{}", display_span(&lexer, span), quoted_text);
+    }
+    Ok(())
 }
 fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
     let input = options.input.input()?;
@@ -86,6 +157,15 @@ impl Default for OutputFormat {
     fn default() -> OutputFormat {
         OutputFormat::Json
     }
+}
+
+#[derive(Clap, Debug)]
+struct TokenizeOptions {
+    /// Output raw spans, without tracking any line information
+    #[clap(long)]
+    raw_spans: bool,
+    #[clap(flatten)]
+    input: InputOptions
 }
 
 #[derive(Clap, Debug)]

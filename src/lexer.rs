@@ -106,8 +106,9 @@ use logos::{Logos, Lexer};
 use crate::ast::Span;
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use crate::ast::ident::{SymbolTable, Symbol};
-use crate::parse::errors::LineNumberTracker;
 use crate::ast::tree::Operator;
+
+pub use crate::parse::errors::LineNumberTracker;
 
 /// A python identifier
 ///
@@ -181,11 +182,14 @@ impl Default for RawLexerState {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Error)]
 pub enum LexError {
+    #[error("Invalid token")]
     InvalidToken,
+    #[error("Allocation failed")]
     AllocFailed,
-    InvalidString(StringError)
+    #[error("Invalid string: {0}")]
+    InvalidString(#[source] StringError)
 }
 impl From<AllocError> for LexError {
     #[inline]
