@@ -1,4 +1,4 @@
-use clap::{Clap, ArgGroup, ValueHint};
+use clap::{Clap, ArgGroup, ValueHint, AppSettings};
 use pathos_python_parser::ParseMode;
 use std::path::{PathBuf};
 use anyhow::{Error, Context};
@@ -11,9 +11,38 @@ use pathos_python_parser::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
 
+/// Command line interface to the Pathos python parser
+///
+/// Includes a small set of tools that are useful
+#[derive(Clap, Debug)]
+#[clap(setting = AppSettings::InferSubcommands)]
+#[clap(
+    author, // Derive author from Cargo.toml
+    version, // Derive version from Cargo.toml
+    name = "pathos"
+)]
+enum Opt {
+    /// A simple command to parse Python sources,
+    /// then dump its AST
+    ///
+    /// By default, this dumps a JSON representation
+    /// that should match the CPython AST.
+    /// However, other representations should (eventually)
+    /// be implemented.
+    ///
+    /// See the (unofficial) documentation of the official AST:
+    /// https://greentreesnakes.readthedocs.io/en/latest/nodes.html
+    DumpAst(DumpAstOptions)
+}
+
 fn main() -> anyhow::Result<()> {
-    let options: Options = Options::parse();
-    let input = options.input()?;
+    let options: Opt = Opt::parse();
+    match options {
+        Opt::DumpAst(ref inner) => dump_ast(inner)
+    }
+}
+fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
+    let input = options.input.input()?;
     let text = input.read_input()?;
     let arena = Allocator::new(Bump::new());
     let mut pool = ConstantPool::new(&arena);
@@ -21,7 +50,7 @@ fn main() -> anyhow::Result<()> {
     let ast = pathos_python_parser::parse_text(
         &arena,
         &text,
-        options.parse_mode.map_or_else(|| input.default_parse_mode(), ParseMode::from),
+        options.parse_mode.clone().map_or_else(|| input.default_parse_mode(), ParseMode::from),
         &mut pool,
         &mut symbols
     ).with_context(|| format!("Failed to parse input"))?;
@@ -48,7 +77,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Clap)]
+#[derive(Clap, Debug, Clone, Copy)]
 pub enum OutputFormat {
     Json,
     Debug
@@ -59,24 +88,8 @@ impl Default for OutputFormat {
     }
 }
 
-/// A simple command to parse Python sources,
-/// then dump its AST
-///
-/// By default, this dumps a JSON representation
-/// that should match the CPython AST.
-/// However, other representations should (eventually)
-/// be implemented.
-///
-/// See the (unofficial) documentation of the official AST:
-/// https://greentreesnakes.readthedocs.io/en/latest/nodes.html
-#[derive(Clap)]
-#[clap(
-    author, // Derive author from Cargo.toml
-    version, // Derive version from Cargo.toml
-    name = "dump-ast"
-)]
-#[clap(group = ArgGroup::new("input").required(true))]
-struct Options {
+#[derive(Clap, Debug)]
+struct DumpAstOptions {
     /// Give verbose output
     #[clap(long, short = 'v')]
     verbose: bool,
@@ -88,6 +101,12 @@ struct Options {
     /// The mode to parse the input in
     #[clap(long, arg_enum)]
     parse_mode: Option<ParseModeOpt>,
+    #[clap(flatten)]
+    input: InputOptions
+}
+#[derive(Clap, Debug)]
+#[clap(group = ArgGroup::new("input").required(true))]
+pub struct InputOptions {
     /// The input source file
     #[clap(
         long, short = 'c',
@@ -107,8 +126,7 @@ struct Options {
     #[clap(long = "edit", group = "input")]
     open_editor: bool,
 }
-
-impl Options {
+impl InputOptions {
     fn input(&self) -> Result<Input, Error> {
         if let Some(ref f) = self.input_file {
             Ok(Input::File(f.clone()))
@@ -177,7 +195,7 @@ impl Input {
         }
     }
 }
-#[derive(Clap)]
+#[derive(Clap, Debug, Clone)]
 enum ParseModeOpt {
     #[clap(alias = "expr", alias = "eval")]
     Expression,

@@ -6,8 +6,8 @@ authors = ["Techcable <Techcable@techcable.net>"]
 edition = "2018"
 
 [[bin]]
-name = "pathos-dump-ast"
-path = "src/bin/dump_ast.rs"
+name = "pathos"
+path = "src/bin/pathos.rs"
 required-features = ["cli"]
 
 [features]
