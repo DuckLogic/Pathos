@@ -399,6 +399,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     /// NOTE: Panics on end of line. It is the caller's responsibility to check
     /// this. This should be fine if you've already done a call to `peek`.
     #[inline]
+    #[track_caller]
     pub fn skip(&mut self) -> Result<Token<'a>, ParseError> {
         match self.pop() {
             Ok(Some(SpannedToken { kind, .. })) => Ok(kind),
