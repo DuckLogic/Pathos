@@ -361,9 +361,8 @@ impl<'src, 'a> Parser<'src, 'a> {
     /// This doesn't necessarily advance the lexer past newlines,
     /// and may return `None` if the end of line is encountered
     #[inline]
-    pub fn look_ahead(&self, amount: usize) -> Result<Option<SpannedToken<'a>>, ParseError> {
-        // TODO: Change signature to reflect the fact this is infallible
-        Ok(self.buffer.get(self.current_index + amount).cloned())
+    pub fn look_ahead(&self, amount: usize) -> Option<Token<'a>> {
+        self.buffer.get(self.current_index + amount).map(|tk| tk.kind)
     }
     /// Skips over the next token without returning it
     ///

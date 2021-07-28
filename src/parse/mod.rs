@@ -7,7 +7,7 @@ use crate::ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
 use crate::lexer::Token;
 
 pub use self::expr::ExprPrec;
-use self::parser::{IParser, Parser, SpannedToken};
+use self::parser::{IParser, Parser};
 use crate::ast::{Span, Spanned};
 use crate::parse::errors::ParseErrorKind;
 use crate::ParseMode;
@@ -166,12 +166,8 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                         }
                         ArgumentStyle::Keyword => {
                             let is_vararg_declaration = matches!(
-                                /*
-                                 * TODO: An error here would generate an unhelpful message.
-                                 * However, swallowing it would be even worse.
-                                 */
-                                self.parser.look_ahead(1)?,
-                                Some(SpannedToken { kind: Token::Ident(_), .. })
+                                self.parser.look_ahead(1),
+                                Some(Token::Ident(_))
                             );
                             return Err(ParseError::builder(self.parser.current_span(), ParseErrorKind::UnexpectedToken)
                                 .expected("More keyword argument names")

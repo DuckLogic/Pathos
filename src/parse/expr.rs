@@ -501,7 +501,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         })?)
     }
     fn parse_call_arg(&mut self, first_keyword_arg_name: Option<Symbol<'a>>) -> Result<ParsedCallArg<'a>, ParseError> {
-        match (self.parser.peek(), self.parser.look_ahead(1)?.map(|tk| tk.kind)) {
+        match (self.parser.peek(), self.parser.look_ahead(1)) {
             (Some(Token::Ident(name)), Some(Token::Equals)) => {
                 let name_span = self.parser.current_span();
                 self.parser.skip();

@@ -1,4 +1,4 @@
-use crate::parse::{PythonParser, ArgumentParseOptions, SpannedToken};
+use crate::parse::{PythonParser, ArgumentParseOptions};
 use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
 use crate::lexer::Token;
 use crate::ParseError;
@@ -17,10 +17,16 @@ use crate::vec;
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn statement(&mut self) -> Result<Stmt<'a>, ParseError> {
         let stmt = match self.parser.peek() {
+            Some(Token::Async) if matches!(self.parser.look_ahead(1), Some(Token::Def)) => {
+                self.parse_function_def(&[])?
+            },
             Some(Token::Assert) => self.parse_assertion()?,
             Some(Token::Pass) => {
                 let span = self.parser.expect(Token::Pass)?.span;
                 self.stmt(StmtKind::Pass { span })?
+            },
+            Some(Token::Def) => {
+                self.parse_function_def(&[])?
             },
             Some(Token::Del) => {
                 let start_span = self.parser.expect(Token::Del)?.span.start;
@@ -281,7 +287,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Some(Token::Def) => {
                 self.parse_function_def(decorators)
             },
-            Some(Token::Async) if matches!(self.parser.look_ahead(1)?, Some(SpannedToken { kind: Token::Def, .. })) => {
+            Some(Token::Async) if matches!(self.parser.look_ahead(1), Some(Token::Def)) => {
                 self.parse_function_def(decorators)
             },
             Some(Token::Class) => {
