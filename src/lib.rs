@@ -13,6 +13,7 @@ pub mod lexer;
 pub mod ast;
 mod parse;
 #[cfg(feature = "unicode-named-escapes")]
+#[allow(clippy::all)]
 mod unicode_names;
 
 pub use parse::errors::ParseError;

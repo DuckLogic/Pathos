@@ -119,7 +119,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let mut current_default_handling = DefaultArgumentHandling::Standard;
         /// Give a good error message depending on our current state (or rather, current ArgumentStyle)
         #[cold]
-        fn unexpected_item_msg<'a>(current_style: ArgumentStyle, ending_token: &Token<'a>) -> Box<str> {
+        fn unexpected_item_msg(current_style: ArgumentStyle, ending_token: &Token) -> Box<str> {
             let primary_msg = match current_style {
                 ArgumentStyle::Positional => "an arg, '/', '*', '**'",
                 ArgumentStyle::PositionalOnly => "an arg, '*', '**'",
@@ -137,7 +137,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             match self.parser.peek() {
                 Some(Token::Slash) if current_style == ArgumentStyle::Positional => {
                     // Switch to positional only args
-                    self.parser.skip()?;
+                    self.parser.skip();
                     current_style = ArgumentStyle::PositionalOnly;
                     self.parser.expect(Token::Comma)?;
                     /*
@@ -202,8 +202,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                              * We're a keyword-only specifier.
                              * Consume the comma and continue parsing
                              */
-                            end = self.parser.current_span().end;
-                            self.parser.skip()?;
+                            end = self.parser.skip().span.end;
                             continue 'argParsing;
                         },
                         _ => {
@@ -218,7 +217,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     // Fallthrough to comma/closing
                 },
                 Some(Token::DoubleStar) => {
-                    self.parser.skip()?;
+                    self.parser.skip();
                     keyword_vararg = Some(&*self.arena.alloc(self.parse_single_argument_declaration(
                         &DefaultArgumentHandling::ForbidDefaults {
                             reason: "for keyword vararg parameter"
@@ -258,8 +257,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             // Fallthrough: Either parse a comma or ending
             match self.parser.peek() {
                 Some(Token::Comma) => {
-                    end = self.parser.current_span().end;
-                    self.parser.skip()?;
+                    end = self.parser.skip().span.end;
                     continue 'argParsing;
                 },
                 Some(other) if other == ending_token => {
@@ -289,7 +287,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let mut type_annotation = None;
         match self.parser.peek() {
             Some(Token::Colon) if opts.allow_type_annotations => {
-                self.parser.skip()?;
+                self.parser.skip();
                 type_annotation = Some(self.expression()?);
                 end = type_annotation.unwrap().span().end;
             },

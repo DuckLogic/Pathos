@@ -969,7 +969,7 @@ impl<'a> Serialize for Arguments<'a> {
                 let mut last_style = None;
                 for arg in self.args {
                     if let Some(last_serialized_style) = last_style {
-                        if !(arg.style >= last_serialized_style) {
+                        if arg.style < last_serialized_style {
                             // Not in order
                             return Err(S::Error::custom(format_args!(
                                 "Invalid ordering: Expected {:?} arg to be after all {:?} args",

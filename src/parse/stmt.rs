@@ -95,7 +95,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 loop {
                     aliases.push(self.parse_import_alias(|p| p.parse_module_path())?)?;
                     if let Some(Token::Comma) = self.parser.peek() {
-                        self.parser.skip()?;
+                        self.parser.skip();
                         continue
                     } else {
                         break
@@ -111,7 +111,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 let relative_module = self.parse_relative_import_module()?;
                 self.parser.expect(Token::Import)?;
                 let (inside_parens, closing_token) = if matches!(self.parser.peek(), Some(Token::OpenParen)) {
-                    self.parser.skip()?;
+                    self.parser.skip();
                     (true, Token::CloseParen)
                 } else {
                     (false, Token::Newline)
@@ -143,7 +143,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         };
         match self.parser.peek() {
             Some(Token::Newline) => {
-                self.parser.skip()?;
+                self.parser.skip();
                 Ok(stmt)
             },
             None if self.parser.is_end_of_file() => {
@@ -226,7 +226,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             check_valid_target(val)?;
         }
         if let Some(Token::Colon) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             let target = Self::check_valid_augmented_assign_target(first, "annotated assignment")?;
             let annotation = self.expression()?;
             let value = if let Some(Token::Equals) = self.parser.peek() {
@@ -234,27 +234,24 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 Some(self.expression()?)
             } else { None };
             let end = match value {
-                Some(ref val) => val.span().end,
+                Some(val) => val.span().end,
                 None => annotation.span().end
             };
-            return Ok(self.stmt(StmtKind::AnnAssign {
+            return self.stmt(StmtKind::AnnAssign {
                 value, annotation, target,
-                simple: match target {
-                    ExprKind::Name { .. } => true,
-                    _ => false
-                },
+                simple: matches!(target, ExprKind::Name { .. }),
                 span: Span { start: first_span.start, end },
-            })?)
+            })
         }
         self.parser.expect(Token::Equals)?;
         let mut targets = vec![in self.arena; first.with_implicit_tuple()?.unwrap()]?;
-        let mut assigned_value = loop {
+        let assigned_value = loop {
             let expression_list = self.parse_expression_list(false, EndFunc::new(
                 "newline or another '='",
                 |parser| matches!(parser.peek(), Some(Token::Equals) | Some(Token::Newline))
             ))?;
             if let Some(Token::Equals) = self.parser.peek() {
-                self.parser.skip()?;
+                self.parser.skip();
                 for val in expression_list.iter() {
                     check_valid_target(val)?;
                 }
@@ -274,7 +271,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     fn parse_decorated(&mut self) -> Result<Stmt<'a>, ParseError> {
         let mut decorators = Vec::new(self.arena);
         while let Some(Token::At) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             decorators.push(self.expression()?)?;
             self.parser.expect(Token::Newline)?;
             self.parser.next_line()?;
@@ -290,18 +287,18 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Some(Token::Class) => {
                 self.parse_class_def(decorators)
             },
-            _ => return Err(self.parser.unexpected(&"either a function or class definition"))
+            _ => Err(self.parser.unexpected(&"either a function or class definition"))
         }
     }
     fn parse_function_def(&mut self, decorators: &'a [Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
         let start = self.parser.current_span().start;
         let is_async = match self.parser.peek() {
             Some(Token::Def) => {
-                self.parser.skip()?;
+                self.parser.skip();
                 false
             },
             Some(Token::Async) => {
-                self.parser.skip()?;
+                self.parser.skip();
                 self.parser.expect(Token::Def)?;
                 true
             },
@@ -313,22 +310,26 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             allow_type_annotations: true
         })?;
         self.parser.expect(Token::CloseParen)?;
-        let return_type = if let Some(Token::CloseParen) = self.parser.peek() {
-            self.parser.skip()?;
+        let return_type = if let Some(Token::Colon) = self.parser.peek() {
+            self.parser.skip();
             Some(self.expression()?)
-        } else { None };
-        let mut end = self.parser.expect(Token::Colon)?.span.end;
+        } else {
+            None
+        };
+        self.parser.expect(Token::Colon)?;
         self.parser.expect(Token::Newline)?;
         self.parser.next_line()?;
         self.parser.expect(Token::IncreaseIndent)?;
         let mut body = Vec::new(self.arena);
+        let mut end: u64;
         loop {
             let stmt = self.statement()?;
             body.push(stmt)?;
+            end = stmt.span().end;
             self.parser.next_line()?;
             match self.parser.peek() {
                 Some(Token::DecreaseIndent) => {
-                    self.parser.skip()?;
+                    self.parser.skip();
                     break
                 },
                 Some(_) => {
@@ -339,7 +340,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
         let span = Span { start, end };
         let body = &*body.into_slice();
-        Ok(self.stmt(if is_async {
+        self.stmt(if is_async {
             StmtKind::FunctionDef {
                 span, name,
                 args: arg_declarations,
@@ -357,17 +358,17 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 returns: return_type,
                 type_comment: None
             }
-        })?)
+        })
     }
-    fn parse_class_def(&mut self, decorators: &[Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
-        todo!()
+    fn parse_class_def(&mut self, decorators: &'a [Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
+        todo!("{:?}", decorators)
     }
     fn parse_relative_import_module(&mut self) -> Result<RelativeModule<'a>, ParseError> {
         let mut level = 0u32;
         let Span { start, mut end } = self.parser.current_span();
         while matches!(self.parser.peek(), Some(Token::Period)) {
             end = self.parser.current_span().end;
-            self.parser.skip()?;
+            self.parser.skip();
             level += 1;
         }
         if level == 0 {
@@ -393,7 +394,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let start = self.parser.current_span().end;
         let name = inner_parser(&mut *self)?;
         let renamed = if let Some(Token::As) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             Some(inner_parser(&mut *self)?)
         } else {
             None
@@ -435,7 +436,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let start = self.parser.expect(Token::Assert)?.span.start;
         let condition = self.expression()?;
         let message = if let Some(Token::Comma) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             Some(self.expression()?)
         } else { None };
         let end = match message {

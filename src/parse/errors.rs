@@ -32,6 +32,11 @@ pub struct DetailedSpan {
 pub struct LineNumberTracker {
     line_starts: Vec<u64>,
 }
+impl Default for LineNumberTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl LineNumberTracker {
     pub fn new() -> LineNumberTracker {
         LineNumberTracker { line_starts: vec![0] }

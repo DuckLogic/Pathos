@@ -213,10 +213,7 @@ impl<'p, 'src, 'a: 'p,
                         let should_eat_more = match parser.peek() {
                             Some(Token::Newline) => {
                                 // Implicitly consume line and fetch more input
-                                match parser.skip() {
-                                    Ok(_) => {},
-                                    Err(e) => return Some(Err(e))
-                                };
+                                parser.skip();
                                 if parser.is_empty() {
                                     true
                                 } else {
@@ -260,10 +257,7 @@ impl<'p, 'src, 'a: 'p,
                 SeparatorParseState::AwaitingSeparator => {
                     let parser = self.parser.as_mut_parser();
                     if parser.peek() == Some(self.separator) {
-                        match parser.skip() {
-                            Ok(_) => {},
-                            Err(e) => return Some(Err(e))
-                        };
+                        parser.skip();
                         self.state = SeparatorParseState::AwaitingNext;
                         continue; // Continue parsing
                     } else {
@@ -352,23 +346,13 @@ impl<'src, 'a> Parser<'src, 'a> {
     }
     #[inline]
     pub fn peek(&self) -> Option<Token<'a>> {
-        match self.buffer.get(self.current_index) {
-            Some(tk) => Some(tk.kind),
-            None => None
-        }
+        self.buffer.get(self.current_index).map(|tk| tk.kind)
     }
     /// Return if the next token is either `Newline` or the EOF
     #[inline]
     pub fn is_newline(&self) -> bool {
         self.peek() == Some(Token::Newline) || self.is_end_of_file()
     }
-    fn assert_empty(&mut self) -> bool {
-        debug_assert_eq!(
-            self.lexer.next(),
-            Ok(None)
-        );
-        true
-    } 
     /// Look ahead the specified number of tokens
     ///
     /// If `amount == 0`, then this is equivalent
@@ -400,38 +384,23 @@ impl<'src, 'a> Parser<'src, 'a> {
     /// this. This should be fine if you've already done a call to `peek`.
     #[inline]
     #[track_caller]
-    pub fn skip(&mut self) -> Result<Token<'a>, ParseError> {
-        match self.pop() {
-            Ok(Some(SpannedToken { kind, .. })) => Ok(kind),
-            Ok(None) => unreachable!("EOL/EOF"),
-            Err(e) => Err(e)
-        }
+    pub fn skip(&mut self) -> SpannedToken<'a> {
+        self.pop().expect("EOL/EOF")
     }
     /// Pop a token, advancing the position in the internal buffer.
     ///
     /// Return `None` if already at the end of the line.
     #[inline]
-    pub fn pop(&mut self) -> Result<Option<SpannedToken<'a>>, ParseError> {
+    #[must_use = "Did you mean skip()? pop() does nothing if empty..."]
+    pub fn pop(&mut self) -> Option<SpannedToken<'a>> {
         // TODO: Update signature to reflect the fact this is now infallible
         match self.buffer.get(self.current_index) {
             Some(&tk) => {
                 self.current_index += 1;
-                Ok(Some(tk))
+                Some(tk)
             },
-            None => Ok(None)
+            None => None
         }
-    }
-    /// Clear the internal buffer, and reset the parser for use with parsing a new line
-    pub fn reset_buffer(&mut self) -> Result<(), ParseError> {
-        self.buffer.clear();
-        self.current_index = 0;
-        self.next_line()?; // We always have at least one line (unless we have an error)
-        Ok(())
-    }
-    /// Give the length of input remaining in the buffer
-    #[inline]
-    pub fn remaining(&self) -> usize {
-        self.buffer.len() - self.current_index
     }
     /// Advance the tokenizer, and fill the buffer with the next (logical) line of input
     ///
@@ -446,7 +415,7 @@ impl<'src, 'a> Parser<'src, 'a> {
         let mut count = 0;
         loop {
             let lexer_span = self.lexer.current_span();
-            let tk = match self.lexer.next() {
+            let tk = match self.lexer.try_next() {
                 Ok(Some(val)) => SpannedToken { span: lexer_span, kind: val },
                 Ok(None) => {
                     self.eof = true;
@@ -538,19 +507,13 @@ impl<'src, 'a> Parser<'src, 'a> {
         &mut self, expected: &dyn Display,
         func: impl FnOnce(&SpannedToken<'a>) -> Option<T>
     ) -> Result<T, ParseError> {
-        match self.peek_tk() {
-            Some(actual) => {
-                if let Some(res) = func(&actual) {
-                    match self.pop()? {
-                        Some(tk) => {
-                            debug_assert_eq!(tk, actual.kind);
-                            return Ok(res);
-                        },
-                        None => unreachable!()
-                    }
-                }
-            },
-            None => {}
+        if let Some(peeked) = self.peek_tk() {
+            if let Some(res) = func(&peeked) {
+                let actual = self.skip();
+                debug_assert_eq!(peeked.kind, actual.kind);
+                debug_assert_eq!(peeked.span, actual.span);
+                return Ok(res);
+            }
         }
         // fallthrough to error
         Err(self.unexpected(expected))

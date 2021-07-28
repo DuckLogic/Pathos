@@ -40,10 +40,7 @@ impl<'a> ConstantPool<'a> {
     }
     #[inline]
     pub fn create(&mut self, key: ConstantKind<'a>) -> Result<&'a ConstantKind<'a>, AllocError> {
-        self.create_with(
-            key.clone(),
-            move |a| Ok(&*a.alloc(key)?)
-        )
+        self.create_with(key, move |a| Ok(&*a.alloc(key)?))
     }
     #[inline]
     pub fn bool(&mut self, span: Span, b: bool) -> Result<Constant<'a>, AllocError> {
@@ -160,7 +157,7 @@ impl<'a> Deref for Constant<'a> {
     type Target = ConstantKind<'a>;
     #[inline]
     fn deref(&self) -> &ConstantKind<'a> {
-        &self.kind
+        self.kind
     }
 }
 impl Spanned for Constant<'_> {
@@ -195,9 +192,9 @@ impl Display for ConstantKind<'_> {
             },
             ConstantKind::Bool(true) => f.write_str("True"),
             ConstantKind::Bool(false) => f.write_str("False"),
-            ConstantKind::Tuple(ref vals) => {
+            ConstantKind::Tuple(vals) => {
                 f.write_str("(")?;
-                for val in *vals {
+                for val in vals {
                     write!(f, "{},", val)?;
                 }
                 f.write_str(")")?;
@@ -533,6 +530,7 @@ impl QuoteStyle {
         }
     }
     #[inline]
+    #[allow(clippy::len_without_is_empty)] // We are never empty
     pub fn len(self) -> usize {
         if self.is_triple_string() { 3 } else { 1 }
     }

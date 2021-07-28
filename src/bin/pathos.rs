@@ -67,7 +67,7 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
     let mut quoted_text = String::new();
     while let Some((span, token)) = {
         let span = lexer.current_span();
-        match lexer.next() {
+        match lexer.try_next() {
             Ok(Some(tk)) => Some((span, tk)),
             Err(err) => return Err(err).with_context(|| format!("Error at {}", display_span(&lexer, span))),
             Ok(None) => None
@@ -124,7 +124,7 @@ fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
         options.parse_mode.clone().map_or_else(|| input.default_parse_mode(), ParseMode::from),
         &mut pool,
         &mut symbols
-    ).with_context(|| format!("Failed to parse input"))?;
+    ).with_context(|| "Failed to parse input".to_string())?;
     eprintln!("Pretty printed ast:");
     match options.output_format.unwrap_or_else(Default::default) {
         OutputFormat::Json => {
@@ -134,7 +134,7 @@ fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
                 &mut out,
                 &ast
             )?;
-            out.write(b"\n")?;
+            out.write_all(b"\n")?;
             out.flush()?;
             drop(out);
         },
@@ -250,7 +250,7 @@ impl Input {
                 let stdin = std::io::stdin();
                 let mut stdin = stdin.lock();
                 stdin.read_to_string(&mut res)
-                    .with_context(|| format!("Unable to read stdin"))?;
+                    .with_context(|| "Unable to read stdin".to_string())?;
                 drop(stdin);
                 Ok(res)
             },

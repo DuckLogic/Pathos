@@ -2,6 +2,7 @@
 use std::fmt::{self, Formatter, Display, Debug};
 use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::num::ParseIntError;
 
 use crate::alloc::{Allocator, AllocError};
@@ -269,7 +270,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     pub fn lex_all(&mut self, text: &'src str) -> Result<Vec<Token<'arena>>, LexError> {
         self.reset(text);
         let mut res = Vec::new();
-        while let Some(token) = self.next()? {
+        while let Some(token) = self.try_next()? {
             res.push(token);
         }
         Ok(res)
@@ -302,24 +303,24 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         self.symbol_table.alloc(text)
     }
     #[allow(unused)]
-    pub fn next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
-        if self.pending_indentation_change != 0 {
-            if self.pending_indentation_change < 0 {
+    pub fn try_next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
+        match self.pending_indentation_change.cmp(&0) {
+            Ordering::Equal => {},
+            Ordering::Less => {
                 self.pending_indentation_change += 1;
                 return Ok(Some(Token::DecreaseIndent));
-            } else if self.pending_indentation_change > 0 {
+            },
+            Ordering::Greater => {
                 self.pending_indentation_change -= 1;
                 return Ok(Some(Token::IncreaseIndent));
-            } else { unreachable!() }
+            }
         }
         'yum: loop {
             if self.starting_line {
                 self.starting_line = false;
-                let amount = match self.raw_lexer.remainder().bytes()
-                        .position(|b| b != b' ' && b != b'\t')  {
-                    Some(amount) => amount,
-                    None => 0
-                };
+                let amount = self.raw_lexer.remainder().bytes()
+                    .position(|b| b != b' ' && b != b'\t')
+                    .unwrap_or(0);
                 let actual_byte = self.raw_lexer.remainder().as_bytes().get(amount).cloned();
                 self.raw_lexer.bump(amount);
                 if actual_byte == Some(b'\n') {
@@ -340,22 +341,24 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                     continue 'yum;
                 }
                 let current_top = *self.indent_stack.last().unwrap();
-                if amount > current_top {
-                    self.indent_stack.push(amount);
-                    return Ok(Some(Token::IncreaseIndent));
-                } else if amount < current_top {
-                    assert_eq!(self.pending_indentation_change, 0);
-                    while amount < *self.indent_stack.last().unwrap() {
-                        self.indent_stack.pop();
-                        self.pending_indentation_change -= 1;
+                match amount.cmp(&current_top) {
+                    Ordering::Greater => {
+                        self.indent_stack.push(amount);
+                        return Ok(Some(Token::IncreaseIndent));
+                    },
+                    Ordering::Less => {
+                        assert_eq!(self.pending_indentation_change, 0);
+                        while amount < *self.indent_stack.last().unwrap() {
+                            self.indent_stack.pop();
+                            self.pending_indentation_change -= 1;
+                            assert!(!self.indent_stack.is_empty());
+                        }
+                        assert!(self.pending_indentation_change < 0);
+                        self.pending_indentation_change += 1;
                         assert!(!self.indent_stack.is_empty());
-                    }
-                    assert!(self.pending_indentation_change < 0);
-                    self.pending_indentation_change += 1;
-                    assert!(!self.indent_stack.is_empty());
-                    return Ok(Some(Token::DecreaseIndent));
-                } else {
-                    assert_eq!(amount, current_top);
+                        return Ok(Some(Token::DecreaseIndent));
+                    },
+                    Ordering::Equal => {}
                 }
             }
             // Lets do some post processing ;)
@@ -420,14 +423,12 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             ::memchr::memmem::find_iter(
                 original_bytes,
                 style.quote_style.text().as_bytes(),
-            ).filter(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
-            .next()
+            ).find(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
         } else {
             ::memchr::memchr_iter(
                 style.quote_style.start_byte(),
                 original_bytes
-            ).filter(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
-            .next()
+            ).find(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
         }.ok_or(StringError::MissingEnd)?;
         let mut buffer = crate::alloc::String::with_capacity(
             self.arena,
@@ -781,10 +782,7 @@ impl<'a> Token<'a> {
                 f.write_str(text)
             }
         } else {
-            let should_write_quotes = escaped && match *self {
-                Token::StringLiteral(_) => false,
-                _ => true
-            };
+            let should_write_quotes = escaped && !matches!(*self, Token::StringLiteral(_));
             if should_write_quotes {
                 f.write_char('"')?;
             }
@@ -1080,7 +1078,7 @@ fn ident<'src>(lex: &mut Lexer<'src, RawToken<'src>>) -> &'src str {
     lex.slice() // We don't intern till later ;)
 }
 #[cold]
-fn fallback_parse_int<'arena>(
+fn fallback_parse_int(
     radix: i64, text: &str
 ) -> BigInt {
     use crate::ast::constants::BigIntInternal;
@@ -1414,7 +1412,7 @@ mod test {
         ($lexer:expr, $res:expr;) => ()
     }
     macro_rules! test_lex {
-        ($text:expr, $($om:tt)*) => {{
+        ($text:expr, $($om:tt)*) => { #[allow(clippy::vec_init_then_push)] {
             let arena = Allocator::new(Bump::new());
             let symbol_table = SymbolTable::new(&arena);
             let mut lexer = PythonLexer::new(&arena, symbol_table, "");

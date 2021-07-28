@@ -243,7 +243,7 @@ impl<'a, V> SymbolMap<'a, V> {
     }
     #[inline]
     pub fn get<K: SymbolKey<'a>>(&self, key: K) -> Option<&V> {
-        self.0.get::<str>(&key.as_ref())
+        self.0.get::<str>(key.as_ref())
     }
     #[inline]
     pub fn entry<'m, K: SymbolKey<'a>>(&'m mut self, key: K) -> ::hashbrown::hash_map::RawEntryMut<'m, Symbol<'a>, V, ::hashbrown::hash_map::DefaultHashBuilder> {
@@ -275,8 +275,7 @@ impl<'a, 'b> SymbolKey<'a> for &'b str {
     #[inline]
     fn hash_code<H: BuildHasher>(&self, hasher: &H) -> u64 {
         let mut state = hasher.build_hasher();
-        let s: &str = self.as_ref();
-        s.hash(&mut state);
+        self.hash(&mut state);
         state.finish()
     }
     #[inline]

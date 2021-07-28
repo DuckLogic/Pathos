@@ -177,7 +177,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let mut left = match (token, token.as_ref().map(|tk| &tk.kind)
             .and_then(Self::prefix_parser)) {
             (Some(tk), Some(parser)) if parser.prec >= min_prec => {
-                self.parser.skip()?;
+                self.parser.skip();
                 (parser.func)(&mut *self, &tk)?
             },
             _ => {
@@ -194,7 +194,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                     if parser.prec <= min_prec {
                         return Ok(left)
                     }
-                    self.parser.skip()?;
+                    self.parser.skip();
                     left = (parser.func)(self, left, &next_token)?
                 },
                 None => return Ok(left) // just give left
@@ -321,7 +321,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let original_keyword_span = self.parser.expect(Token::Yield)?.span;
         let start = original_keyword_span.start;
         if let Some(Token::From) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             // From expressions are easy. We require one and only one value
             let value = self.expression()?;
             Ok(&*self.arena.alloc(ExprKind::YieldFrom {
@@ -412,19 +412,19 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         match ComparisonOp::from_token(first) {
             Ok(res) => {
                 if !already_ate_first {
-                    self.parser.skip()?;
+                    self.parser.skip();
                 }
                 Ok(Some(res))
             },
             Err(FromTokenError::CompletelyInvalid) => Ok(None),
             Err(FromTokenError::Ambiguous) => {
                 if !already_ate_first {
-                    assert_eq!(self.parser.skip()?, first.kind);
+                    assert_eq!(self.parser.skip().kind, first.kind);
                 }
                 match first.kind {
                     Token::Is => {
                         if self.parser.peek() == Some(Token::Not) {
-                            self.parser.skip()?;
+                            self.parser.skip();
                             Ok(Some(ComparisonOp::IsNot))
                         } else {
                             Ok(Some(ComparisonOp::Is))
@@ -504,7 +504,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         match (self.parser.peek(), self.parser.look_ahead(1)?.map(|tk| tk.kind)) {
             (Some(Token::Ident(name)), Some(Token::Equals)) => {
                 let name_span = self.parser.current_span();
-                self.parser.skip()?;
+                self.parser.skip();
                 self.parser.expect(Token::Equals)?;
                 let value = self.expression()?;
                 Ok(ParsedCallArg::Keyword(Keyword {
@@ -513,7 +513,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 }))
             },
             (Some(Token::DoubleStar), _) => {
-                self.parser.skip()?;
+                self.parser.skip();
                 Ok(ParsedCallArg::KeywordVararg(self.expression()?))
             },
             _ => {
@@ -539,7 +539,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              */
             res.push(self.parse_prec(op.precedence())?)?;
             if self.parser.peek() == Some(op.token())  {
-                self.parser.skip()?;
+                self.parser.skip();
                 continue;
             } else {
                 break
@@ -561,7 +561,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             subscript_indexes.push(self.parse_subscript_index(Token::CloseBracket)?)?;
             match self.parser.peek() {
                 Some(Token::Comma) => {
-                    self.parser.skip()?;
+                    self.parser.skip();
                 }
                 Some(Token::CloseBracket) => break,
                 _ => return Err(self.parser.unexpected(&"either a comma or ']'"))
@@ -608,7 +608,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                  * Push `None` onto the stack of entries
                  */
                 end_index = self.parser.current_span().end;
-                self.parser.skip()?;
+                self.parser.skip();
                 entries.push(None);
             } else if self.parser.peek() == Some(closing_token) && !entries.is_empty() {
                 break;
@@ -617,7 +617,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 end_index = expr.span().end;
                 if let Some(Token::Colon) = self.parser.peek() {
                     end_index = self.parser.current_span().end;
-                    self.parser.skip()?;
+                    self.parser.skip();
                     entries.push(Some(expr));
                 } else {
                     entries.push(Some(expr));
@@ -725,11 +725,8 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Token::False => self.pool.bool(span, false)?,
             Token::None => self.pool.none(span)?,
             Token::StringLiteral(lit) => {
-                match lit.style.prefix {
-                    Some(crate::ast::constants::StringPrefix::Unicode) => {
-                        kind = Some("u");
-                    },
-                    _ => {}
+                if let Some(crate::ast::constants::StringPrefix::Unicode) = lit.style.prefix {
+                    kind = Some("u");
                 }
                 self.pool.string(span, *lit)?
             },
@@ -759,7 +756,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     }
     fn parse_single_comprehension(&mut self) -> Result<Comprehension<'a>, ParseError> {
         let is_async = if let Some(Token::Async) = self.parser.peek() {
-            self.parser.skip()?;
+            self.parser.skip();
             true
         } else { false };
         self.parser.expect(Token::For)?;
@@ -771,7 +768,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let iter = self.parse_prec(ExprPrec::Conditional + 1)?;
         let mut ifs = Vec::new(self.arena);
         while let Some(Token::If) = self.parser.peek() {
-            self.parser.skip()?; // Om nom nom
+            self.parser.skip(); // Om nom nom
             /*
              * For the precedence of the condition in a comprehension expression,
              * we can have anything higher than a conditional expression (since that would be nonsense).
@@ -902,19 +899,19 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let start = start_token.span.start;
         if self.parser.peek() == Some(collection_type.closing_token()) {
             let end = self.parser.current_span().end;
-            self.parser.skip()?;
-            if collection_type.is_dict() {
-                return Ok(&*self.arena.alloc(ExprKind::Dict {
+            self.parser.skip();
+            return if collection_type.is_dict() {
+                Ok(&*self.arena.alloc(ExprKind::Dict {
                     span: Span { start, end },
                     elements: &[]
-                })?);
+                })?)
             } else {
-                return Ok(collection_type.create_simple(
+                Ok(collection_type.create_simple(
                     self.arena,
                     Span { start, end },
                     &[],
                     self.expression_context
-                )?);
+                )?)
             }
         }
         if collection_type.is_tuple() && self.parser.peek() == Some(Token::Yield) {
@@ -934,7 +931,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              * It's also possible it's just a set
              */
             if self.parser.peek() == Some(Token::Colon) {
-                self.parser.skip()?;
+                self.parser.skip();
                 // It's a dict alright
                 Some(self.expression()?)
             } else {
@@ -975,7 +972,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              */
             match self.parser.peek() {
                 Some(Token::Comma) => {
-                    self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
+                    self.parser.skip(); // Consume comma, making us ready for ParseSeperated
                 },
                 Some(Token::CloseBrace) => {
                     // Ignore this, ParseSeperated will handle it for us
@@ -1027,7 +1024,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              */
             match self.parser.peek() {
                 Some(Token::Comma) => {
-                    self.parser.skip()?; // Consume comma, making us ready for ParseSeperated
+                    self.parser.skip(); // Consume comma, making us ready for ParseSeperated
                 },
                 Some(closing) if closing == collection_type.closing_token() => {
                     // Ignore this, ParseSeperated will handle it for us
@@ -1191,7 +1188,7 @@ impl CollectionType {
                 ExprKind::List { span, elts: elements, ctx }
             },
             CollectionType::Set => {
-                ExprKind::Set { span, elements: elements }
+                ExprKind::Set { span, elements }
             },
             CollectionType::Tuple => {
                 ExprKind::Tuple { span, elts: elements, ctx }

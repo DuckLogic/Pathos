@@ -275,7 +275,7 @@ impl Allocator {
         self.arena
     }
     #[inline]
-    pub fn alloc<'a, T>(&'a self, val: T) -> Result<&'a mut T, AllocError> {
+    pub fn alloc<T>(&self, val: T) -> Result<&'_ mut T, AllocError> {
         let ptr = self.alloc_layout(Layout::new::<T>())?.as_ptr() as *mut T;
         unsafe {
             ptr.write(val);
@@ -283,7 +283,7 @@ impl Allocator {
         }
     }
     #[inline]
-    pub fn alloc_with<'a, F, T>(&'a self, func: F) -> Result<&'a mut T, AllocError>
+    pub fn alloc_with<F, T>(&self, func: F) -> Result<&'_ mut T, AllocError>
         where F: FnOnce() -> T {
         let ptr = self.alloc_layout(Layout::new::<T>())?.as_ptr() as *mut T;
         unsafe {
