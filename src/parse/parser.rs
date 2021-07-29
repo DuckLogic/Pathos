@@ -5,7 +5,7 @@ use std::ops::Deref;
 use crate::alloc::{Allocator};
 use crate::ast::Span;
 use crate::lexer::{LexError, PythonLexer, Token};
-use crate::parse::errors::{ParseError, ParseErrorKind, LineNumberTracker};
+use crate::parse::errors::{ParseError, ParseErrorKind, LineTracker};
 
 #[derive(Copy, Clone, Debug)]
 pub struct SpannedToken<'a> {
@@ -326,7 +326,7 @@ impl<'src, 'a> Parser<'src, 'a> {
             eof: false,
             current_index: 0,
         };
-        res.lexer.line_number_tracker = Some(LineNumberTracker::new());
+        res.lexer.line_tracker = Some(LineTracker::new());
         res.next_line()?;
         Ok(res)
     }
@@ -444,8 +444,8 @@ impl<'src, 'a> Parser<'src, 'a> {
     }
     /// The line number tracker, to give more detailed errors
     #[inline]
-    pub fn line_number_tracker(&self) -> &LineNumberTracker {
-        self.lexer.line_number_tracker.as_ref().unwrap()
+    pub fn line_number_tracker(&self) -> &LineTracker {
+        self.lexer.line_tracker.as_ref().unwrap()
     }
     /// Check if the internal buffer is empty.
     ///

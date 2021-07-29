@@ -3,6 +3,8 @@
     variant_count, // Used to convert int -> enum
     const_fn_transmute, const_option, // Used for const ExprPrec::from_int().unwrap()
 )]
+#![feature(cell_update)]
+
 use alloc::Allocator;
 use ast::constants::ConstantPool;
 use lexer::{PythonLexer};

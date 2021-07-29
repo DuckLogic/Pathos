@@ -10,7 +10,7 @@ use pathos_python_parser::ast::constants::ConstantPool;
 use pathos_python_parser::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
-use pathos_python_parser::lexer::{PythonLexer, LineNumberTracker};
+use pathos_python_parser::lexer::{PythonLexer, LineTracker};
 
 /// Command line interface to the Pathos python parser
 ///
@@ -54,10 +54,10 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
     let symbols = SymbolTable::new(&arena);
     let mut lexer = PythonLexer::new(&arena, symbols, &text);
     if !options.raw_spans {
-        lexer.line_number_tracker = Some(LineNumberTracker::new());
+        lexer.line_tracker = Some(LineTracker::new());
     }
     let display_span = |lexer: &PythonLexer, span: Span| {
-        if let Some(ref tracker) = lexer.line_number_tracker {
+        if let Some(ref tracker) = lexer.line_tracker {
             format!("{}", tracker.resolve_span(span))
         } else {
             format!("{}", span)

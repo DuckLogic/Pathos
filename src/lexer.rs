@@ -109,7 +109,7 @@ use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use crate::ast::ident::{SymbolTable, Symbol};
 use crate::ast::tree::Operator;
 
-pub use crate::parse::errors::LineNumberTracker;
+pub use crate::parse::errors::LineTracker;
 
 /// A python identifier
 ///
@@ -217,7 +217,7 @@ pub struct PythonLexer<'src, 'arena> {
     indent_stack: Vec<usize>,
     starting_line: bool,
     pub line_start_position: u64,
-    pub line_number_tracker: Option<LineNumberTracker>
+    pub line_tracker: Option<LineTracker>
 }
 impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -233,7 +233,6 @@ impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
 
 macro_rules! translate_tokens {
     ($target:expr; $($name:ident $( ( $mtch:ident ) )? $(=> $handler:expr)?),*) => {{
-        use self::RawToken::*;
         match $target {
             $(RawToken::$name $( ( $mtch ) )? => {
                 translate_tokens!(handler for $name $( ($mtch) )? $(=> $handler)?)
@@ -253,7 +252,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             indent_stack: vec![0],
             starting_line: true,
             line_start_position: 0,
-            line_number_tracker: None
+            line_tracker: None
         }
     }
     pub fn reset(&mut self, text: &'src str) {
@@ -262,7 +261,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         self.indent_stack.clear();
         self.indent_stack.push(0);
         self.line_start_position = 0;
-        if let Some(ref mut tracker) = self.line_number_tracker {
+        if let Some(ref mut tracker) = self.line_tracker {
             tracker.reset();
         }
         self.starting_line = true;
@@ -295,7 +294,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             );
         }
         let next_line_start = self.current_span().end;
-        if let Some(ref mut tracker) = self.line_number_tracker {
+        if let Some(ref mut tracker) = self.line_tracker {
             tracker.mark_line_start(next_line_start);
         }
     }
@@ -304,6 +303,13 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     }
     #[allow(unused)]
     pub fn try_next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
+        let res = self._try_advance();
+        if let Some(ref mut tracker) = self.line_tracker {
+            tracker.extend_character_boundaries(self.raw_lexer.slice());
+        }
+        res
+    }
+    fn _try_advance(&mut self) -> Result<Option<Token<'arena>>, LexError> {
         match self.pending_indentation_change.cmp(&0) {
             Ordering::Equal => {},
             Ordering::Less => {
