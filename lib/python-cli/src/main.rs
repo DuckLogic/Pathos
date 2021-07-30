@@ -1,4 +1,4 @@
-#![feature(backtrace)]
+#![feature(backtrace, never_type)]
 use clap::{Clap, ArgGroup, ValueHint, AppSettings};
 use pathos_python_parser::ParseMode;
 use std::path::{PathBuf};
@@ -13,11 +13,12 @@ use pathos::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
 use pathos_python_parser::lexer::{PythonLexer};
-use pathos::errors::fancy::FancyErrorContext;
+use pathos::errors::fancy::{FancyErrorContext, FancyErrorTarget};
 use pathos::errors::tracker::LineTracker;
 use ariadne::Source;
-use std::error::Error as StdError;
 use pathos::errors::{SpannedError, ErrorSpan};
+use std::fmt::{Debug, Display};
+use std::backtrace::{Backtrace, BacktraceStatus};
 
 /// Command line interface to the Pathos python parser
 ///
@@ -65,16 +66,15 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
     } else {
         None
     };
-    let fancy_source: Option<Source>;
+    let fancy_source: Source;
     let fancy_errors = if options.fancy_errors {
         let line_tracker = line_tracker.as_ref().ok_or_else(|| anyhow::anyhow!("The --fancy-errors flag isn't compatible with --raw-span"))?;
-        fancy_source = Some(Source::from(&text));
+        fancy_source = Source::from(&text);
         Some(FancyErrorContext {
             tracker: line_tracker,
-            current_file: fancy_source.as_ref().unwrap(),
+            current_file: &fancy_source,
         })
     } else {
-        fancy_source = None;
         None
     };
     let display_span = |span: Span| {
@@ -91,8 +91,7 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
             Ok(Some(tk)) => Some((lexer.current_span(), tk)),
             Err(err) => {
                 if let Some(ref fancy_err_ctx) = fancy_errors {
-                    fancy_err_ctx.report_error(&err).eprint(fancy_source.unwrap())?;
-                    std::process::exit(1);
+                    options.error_opts.report_error(fancy_err_ctx, &err)?;
                 } else if let ErrorSpan::Span(span) = err.span() {
                     return Err(err).with_context(|| format!("Error at {}", display_span(span)));
                 } else {
@@ -162,17 +161,7 @@ fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
                 current_file: &source,
                 tracker: &tracker
             };
-            ctx.report_error(&parse_error).eprint(source)?;
-            if let Some(bt) = parse_error.backtrace() {
-                eprint!("Backtrace:");
-                if options.print_error_backtrace {
-                    eprintln!();
-                    eprintln!("{}", bt);
-                } else {
-                    eprintln!(" None")
-                }
-            }
-            std::process::exit(1);
+            options.error_opts.report_error(&ctx, &parse_error)?;
         }
     };
     eprintln!("Pretty printed ast:");
@@ -220,7 +209,73 @@ struct TokenizeOptions {
     #[clap(long = "fancy")]
     fancy_errors: bool,
     #[clap(flatten)]
+    error_opts: ErrorOptions,
+    #[clap(flatten)]
     input: InputOptions
+}
+
+#[derive(Clap, Debug)]
+struct ErrorOptions {
+    /// Print the internal backtrace of errors
+    ///
+    /// This should only be used during debugging of the parser's internals.
+    #[clap(long, alias = "backtrace")]
+    print_error_backtrace: bool,
+    /// Print the internal causes of the error
+    #[clap(long)]
+    print_internal_causes: bool
+}
+impl ErrorOptions {
+    fn print_backtrace(&self, bt: Option<&Backtrace>) {
+        if let Some(bt) = bt {
+            match bt.status() {
+                BacktraceStatus::Unsupported => {
+                    eprintln!("Backtrace: Unsupported");
+                },
+                BacktraceStatus::Disabled => {
+                    eprintln!("Backtrace: Disabled");
+                    eprintln!("  Consider setting $RUST_BACKTRACE=1");
+                },
+                BacktraceStatus::Captured => {
+                    eprintln!("Backtrace:");
+                    eprintln!("{}", bt)
+                },
+                _ => {
+                    eprintln!("Backtrace: Unknown status {:?}", bt.status())
+                }
+            }
+        } else {
+            eprintln!("Backtrace: Missing");
+        }
+    }
+    fn report_error<E>(&self, ctx: &FancyErrorContext, error: &E) -> anyhow::Result<!>
+        where E: FancyErrorTarget + std::error::Error + 'static {
+        struct SourceRef<'a>(&'a Source);
+        impl<'a> ariadne::Cache<()> for SourceRef<'a> {
+            fn fetch(&mut self, _id: &()) -> Result<&Source, Box<dyn Debug + '_>> {
+                Ok(self.0)
+            }
+
+            fn display<'a2>(&self, _id: &'a2 ()) -> Option<Box<dyn Display + 'a2>> {
+                None
+            }
+        }
+        ctx.report_error(error).eprint(SourceRef(ctx.current_file))?;
+        if self.print_error_backtrace {
+            self.print_backtrace(error.backtrace());
+        }
+        if self.print_internal_causes {
+            let mut source = error.source();
+            while let Some(e) = source {
+                eprintln!("Cause: {:?}", e);
+                if self.print_error_backtrace {
+                    self.print_backtrace(e.backtrace());
+                }
+                source = e.source();
+            }
+        }
+        std::process::exit(1);
+    }
 }
 
 #[derive(Clap, Debug)]
@@ -228,11 +283,8 @@ struct DumpAstOptions {
     /// Give verbose output
     #[clap(long, short = 'v')]
     verbose: bool,
-    /// Print the internal backtrace of errors
-    ///
-    /// This should only be used during debugging of the parser's internals.
-    #[clap(long, alias = "backtrace")]
-    print_error_backtrace: bool,
+    #[clap(flatten)]
+    error_opts: ErrorOptions,
     /// The format to output the parsed AST in
     ///
     /// By default, this is inferred
