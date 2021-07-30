@@ -20,6 +20,8 @@ use pathos::Pathos;
 pub mod lexer;
 mod expr;
 mod stmt;
+#[cfg(feature = "fancy-errors")]
+mod fancy_errors;
 
 pub type Parser<'src, 'a> = pathos::parser::Parser<'a, PythonLexer<'src, 'a>>;
 

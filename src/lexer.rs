@@ -46,7 +46,17 @@ pub trait Lexer<'a>: Debug {
     fn try_next(&mut self) -> Result<Option<Self::Token>, Self::Error>;
 }
 
-pub trait LexerError: SpannedError + 'static {
+#[cfg(feature = "fancy-errors")]
+pub trait FancyErrors: crate::errors::fancy::FancyErrorTarget {}
+#[cfg(feature = "fancy-errors")]
+impl<T: crate::errors::fancy::FancyErrorTarget> FancyErrors for T {}
+
+#[cfg(not(feature = "fancy-errors"))]
+pub trait FancyErrors: std::error::Error {}
+#[cfg(not(feature = "fancy-errors"))]
+impl<T: std::error::Error> FancyErrors for T {}
+
+pub trait LexerError: SpannedError + FancyErrors + 'static {
     fn upcast(&self) -> &(dyn std::error::Error + 'static);
     /// Cast this error into an allocation failure (if any)
     fn cast_alloc_failed(&self) -> Option<&AllocError>;

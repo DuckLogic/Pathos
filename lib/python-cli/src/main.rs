@@ -17,7 +17,7 @@ use pathos::errors::fancy::FancyErrorContext;
 use pathos::errors::tracker::LineTracker;
 use ariadne::Source;
 use std::error::Error as StdError;
-use pathos::errors::SpannedError;
+use pathos::errors::{SpannedError, ErrorSpan};
 
 /// Command line interface to the Pathos python parser
 ///
@@ -70,7 +70,7 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
         let line_tracker = line_tracker.as_ref().ok_or_else(|| anyhow::anyhow!("The --fancy-errors flag isn't compatible with --raw-span"))?;
         fancy_source = Some(Source::from(&text));
         Some(FancyErrorContext {
-            tracker: &line_tracker,
+            tracker: line_tracker,
             current_file: fancy_source.as_ref().unwrap(),
         })
     } else {
@@ -93,7 +93,7 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
                 if let Some(ref fancy_err_ctx) = fancy_errors {
                     fancy_err_ctx.report_error(&err).eprint(fancy_source.unwrap())?;
                     std::process::exit(1);
-                } else if let Some(span) = err.span() {
+                } else if let ErrorSpan::Span(span) = err.span() {
                     return Err(err).with_context(|| format!("Error at {}", display_span(span)));
                 } else {
                     return Err(err.into())

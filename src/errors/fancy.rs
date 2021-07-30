@@ -3,15 +3,14 @@ use std::error::Error;
 use ariadne::{Report, ReportKind, Label};
 
 use super::ParseError;
-use crate::errors::{ParseErrorKind, MaybeSpan};
+use crate::errors::{ParseErrorKind, InternalSpan};
 use crate::errors::tracker::LineTracker;
-use crate::lexer::{StringError, StringErrorKind, LexError};
 use crate::ast::Span;
 
 #[derive(Debug, Copy, Clone)]
 pub struct FancySpan {
-    start_char: usize,
-    end_char: usize
+    pub start_char: usize,
+    pub end_char: usize
 }
 impl ariadne::Span for FancySpan {
     type SourceId = ();
@@ -32,24 +31,27 @@ impl ariadne::Span for FancySpan {
     }
 }
 impl Span {
-    fn resolve_fancy(&self, tracker: &LineTracker) -> FancySpan {
+    pub fn resolve_fancy(&self, tracker: &LineTracker) -> FancySpan {
         let start = tracker.char_index(tracker.resolve_position(self.start));
         let end = tracker.char_index(tracker.resolve_position(self.end));
         FancySpan { start_char: start as usize, end_char: end as usize }
     }
 }
-impl MaybeSpan {
+impl InternalSpan {
     fn resolve_fancy(&self, tracker: &LineTracker) -> Option<FancySpan> {
         match *self {
-            MaybeSpan::Missing => None,
-            MaybeSpan::Detailed(detailed) => {
+            InternalSpan::AllocationFailed => None,
+            InternalSpan::Detailed { detailed, .. } => {
                 Some(FancySpan {
                     start_char: tracker.char_index(detailed.start) as usize,
                     end_char: tracker.char_index(detailed.end) as usize
                 })
             }
-            MaybeSpan::Regular(regular) => {
-                MaybeSpan::Detailed(tracker.resolve_span(regular)).resolve_fancy(tracker)
+            InternalSpan::Regular(regular) => {
+                InternalSpan::Detailed {
+                    detailed: tracker.resolve_span(regular),
+                    original: regular
+                }.resolve_fancy(tracker)
             }
         }
     }
@@ -89,38 +91,6 @@ pub trait FancyErrorTarget: Error {
     /// The overall span, broader than any specific label
     fn overall_span(&self, ctx: &FancyErrorContext) -> FancySpan;
 }
-impl FancyErrorTarget for LexError {
-    fn is_alloc_failed(&self) -> bool {
-        matches!(self, LexError::AllocFailed)
-    }
-
-    fn build_fancy_message(&self, ctx: &FancyErrorContext) -> String {
-        match *self {
-            LexError::InvalidToken { span: _ } => "Invalid token".to_string(),
-            LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => format!("String failed to parse: {}", cause.build_fancy_message(ctx))
-        }
-    }
-
-    fn build_fancy_labels(&self, ctx: &FancyErrorContext) -> Vec<Label<FancySpan>> {
-        match *self {
-            LexError::InvalidToken { span } => {
-                vec![Label::new(span.resolve_fancy(ctx.tracker))
-                    .with_message("This text")]
-            }
-            LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => cause.build_fancy_labels(ctx)
-        }
-    }
-
-    fn overall_span(&self, ctx: &FancyErrorContext) -> FancySpan {
-        match *self {
-            LexError::InvalidToken { span } => span.resolve_fancy(ctx.tracker),
-            LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => cause.overall_span(ctx)
-        }
-    }
-}
 impl FancyErrorTarget for ParseError {
     fn is_alloc_failed(&self) -> bool {
         matches!(self.0.kind, ParseErrorKind::AllocationFailed)
@@ -141,11 +111,8 @@ impl FancyErrorTarget for ParseError {
             ParseErrorKind::UnexpectedEol => {
                 "Unexpected end of line.".to_string()
             }
-            ParseErrorKind::UnexpectedToken => {
-                "Unexpected token.".to_string()
-            },
             ParseErrorKind::Lexer(ref l) => {
-                l.to_string()
+                l.build_fancy_message(ctx)
             }
         };
         if !message.ends_with('.') {
@@ -166,7 +133,6 @@ impl FancyErrorTarget for ParseError {
             format!("Expected {}", expected.clone())
         } else {
             match self.0.kind {
-                ParseErrorKind::InvalidToken => "Actually got this text".to_string(),
                 ParseErrorKind::InvalidExpression => "Actually got this expression".to_string(),
                 ParseErrorKind::AllocationFailed => unreachable!(),
                 ParseErrorKind::UnexpectedEof | ParseErrorKind::UnexpectedEol => return vec![],
@@ -180,60 +146,11 @@ impl FancyErrorTarget for ParseError {
     fn overall_span(&self, ctx: &FancyErrorContext) -> FancySpan {
         match self.0.kind {
             ParseErrorKind::AllocationFailed => unreachable!(),
-            ParseErrorKind::InvalidToken |
             ParseErrorKind::InvalidExpression |
             ParseErrorKind::UnexpectedEof |
             ParseErrorKind::UnexpectedEol |
             ParseErrorKind::UnexpectedToken => self.0.span.resolve_fancy(ctx.tracker).unwrap(),
-            ParseErrorKind::InvalidString(ref cause) => cause.overall_span(ctx)
+            ParseErrorKind::Lexer(ref cause) => cause.overall_span(ctx)
         }
-    }
-}
-impl FancyErrorTarget for StringError {
-    fn is_alloc_failed(&self) -> bool {
-        matches!(self.kind, StringErrorKind::AllocFailed)
-    }
-
-    fn build_fancy_message(&self, _ctx: &FancyErrorContext) -> String {
-       match self.kind {
-            StringErrorKind::MissingEnd => {
-                "Missing closing quote".to_string()
-            }
-            StringErrorKind::ForbiddenNewline => {
-                "Unescaped newlines are forbidden".to_string()
-            },
-            StringErrorKind::InvalidEscape { c } => {
-                format!("Invalid escape char: {:?}", c)
-            }
-            StringErrorKind::InvalidNamedEscape => {
-                "Invalid named escape".to_string()
-            }
-            StringErrorKind::UnsupportedNamedEscape => {
-                "Named escapes are unsupported".to_string()
-            }
-            StringErrorKind::AllocFailed => unreachable!()
-        }
-    }
-
-    fn build_fancy_labels(&self, ctx: &FancyErrorContext) -> Vec<Label<FancySpan>> {
-        let mut label = Label::new(self.span.unwrap().resolve_fancy(ctx.tracker));
-        match self.kind {
-            StringErrorKind::MissingEnd | StringErrorKind::ForbiddenNewline => {
-                return vec![] // no labels
-            }
-            StringErrorKind::InvalidEscape { .. } | StringErrorKind::InvalidNamedEscape | StringErrorKind::UnsupportedNamedEscape => {
-                label = label.with_message("At this escape")
-            },
-            StringErrorKind::AllocFailed => unreachable!()
-        }
-        vec![label]
-    }
-
-    fn overall_span(&self, ctx: &FancyErrorContext) -> FancySpan {
-        let original_span = match self.entire_string_span {
-            None => self.span.unwrap(),
-            Some(val) => val
-        };
-        original_span.resolve_fancy(ctx.tracker)
     }
 }
