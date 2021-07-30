@@ -206,7 +206,7 @@ struct TokenizeOptions {
     /// Use fancy errors
     ///
     /// Requires that raw-spans is false
-    #[clap(long = "fancy")]
+    #[clap(long = "no-fancy", parse(from_flag = std::ops::Not::not))]
     fancy_errors: bool,
     #[clap(flatten)]
     error_opts: ErrorOptions,

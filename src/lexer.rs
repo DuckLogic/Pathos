@@ -1,4 +1,4 @@
-use std::fmt::{Debug, Display};
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Deref;
 
 use crate::alloc::AllocError;
@@ -24,11 +24,21 @@ pub struct SpannedToken<'a, T: Token<'a>> {
     pub kind: T,
     pub marker: PhantomData<&'a T>
 }
+impl<'a, T: Token<'a>> Display for SpannedToken<'a, T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.kind, f)
+    }
+}
 impl<'a, T: Token<'a>> Deref for SpannedToken<'a, T> {
     type Target = T;
     #[inline]
     fn deref(&self) -> &T {
         &self.kind
+    }
+}
+impl<'a, T: Token<'a>> PartialEq for SpannedToken<'a, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
     }
 }
 impl<'a, T: Token<'a>> PartialEq<T> for SpannedToken<'a, T> {

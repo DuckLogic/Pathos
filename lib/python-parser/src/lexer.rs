@@ -21,6 +21,7 @@ use pathos_python_ast::constants::StringLiteral;
 use pathos_python_ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use pathos_python_ast::tree::{UnaryOp, Operator, BoolOp, ComparisonOp};
 use pathos_unicode::NameResolveError;
+use std::marker::PhantomData;
 
 pub type SpannedToken<'a> = pathos::lexer::SpannedToken<'a, Token<'a>>;
 
@@ -279,6 +280,24 @@ pub enum LexError {
     InvalidToken {
         span: Span,
     },
+    #[error("Unclosed token '{opening_token}', expected a closing '{expected_closing}")]
+    UnclosedNesting {
+        span: Span,
+        opening_token: SpannedToken<'static>,
+        expected_closing: Token<'static>,
+    },
+    #[error("Got a closing {actual_closing} which doesn't correspond to opening {opening_token}")]
+    MismatchedClosing {
+        span: Span,
+        opening_token: SpannedToken<'static>,
+        expected_closing: Token<'static>,
+        actual_closing: SpannedToken<'static>,
+    },
+    #[error("Got a closing {actual_closing} which doesn't correspond to any opening token")]
+    ClosingWithoutOpening {
+        span: Span,
+        actual_closing: SpannedToken<'static>,
+    },
     #[error("Allocation failed")]
     AllocFailed,
     #[error("Invalid string: {0}")]
@@ -287,6 +306,9 @@ pub enum LexError {
 impl SpannedError for LexError {
     fn span(&self) -> ErrorSpan {
         match *self {
+            LexError::UnclosedNesting { span, .. } |
+            LexError::MismatchedClosing { span, .. } |
+            LexError::ClosingWithoutOpening { span, .. } |
             LexError::InvalidToken { span, .. } => ErrorSpan::Span(span),
             LexError::AllocFailed => ErrorSpan::AllocationFailed,
             LexError::InvalidString(ref cause) => cause.span(),
@@ -300,9 +322,8 @@ impl ILexerError for LexError {
 
     fn cast_alloc_failed(&self) -> Option<&AllocError> {
         match *self {
-            LexError::InvalidToken { .. } |
-            LexError::InvalidString(_) => None,
-            LexError::AllocFailed => Some(&AllocError)
+            LexError::AllocFailed => Some(&AllocError),
+            _ => None
         }
     }
 }
@@ -323,11 +344,34 @@ impl From<StringError> for LexError {
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+pub enum NestingType {
+    Paren,
+    SquareBrackets,
+    CurlyBrace
+}
+impl NestingType {
+    fn opening_token(&self) -> Token<'static> {
+        match *self {
+            NestingType::Paren => Token::OpenParen,
+            NestingType::SquareBrackets => Token::OpenBracket,
+            NestingType::CurlyBrace => Token::OpenBrace
+        }
+    }
+    fn closing_token(&self) -> Token<'static> {
+        match *self {
+            NestingType::Paren => Token::CloseParen,
+            NestingType::SquareBrackets => Token::CloseBracket,
+            NestingType::CurlyBrace => Token::CloseBrace,
+        }
+    }
+}
 pub struct PythonLexer<'src, 'arena> {
     arena: &'arena Allocator,
     raw_lexer: Lexer<'src, RawToken<'src>>,
     symbol_table: SymbolTable<'arena>,
     pending_indentation_change: isize,
+    nesting_stack: Vec<(Span, NestingType)>,
     indent_stack: Vec<usize>,
     starting_line: bool,
     relative_buffer_position: u64,
@@ -370,6 +414,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             arena,
             raw_lexer: RawToken::lexer(text),
             symbol_table,
+            nesting_stack: Vec::new(),
             pending_indentation_change: 0,
             indent_stack: vec![0],
             starting_line: true,
@@ -403,6 +448,46 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     }
     pub fn create_ident(&mut self, text: &'src str) -> Result<Symbol<'arena>, AllocError> {
         self.symbol_table.alloc(text)
+    }
+    pub fn ensure_finished(&self) -> Result<(), LexError> {
+        if let Some(&(span, unclosed_nesting)) = self.nesting_stack.first() {
+            return Err(LexError::UnclosedNesting {
+                span, opening_token: unclosed_nesting.opening_token().spanned(span),
+                expected_closing: unclosed_nesting.closing_token()
+            })
+        } else {
+            Ok(())
+        }
+    }
+    fn open_nesting(&mut self, tk: SpannedToken<'static>) -> Result<Token<'arena>, LexError> {
+        let nesting_type = match tk.kind {
+            Token::OpenParen => NestingType::Paren,
+            Token::OpenBracket => NestingType::SquareBrackets,
+            Token::OpenBrace => NestingType::CurlyBrace,
+            _ => unreachable!("{:?}", tk.kind)
+        };
+        self.nesting_stack.push((tk.span, nesting_type));
+        Ok(tk.kind)
+    }
+    fn close_nesting(&mut self, tk: SpannedToken<'static>) -> Result<Token<'arena>, LexError> {
+        if let Some(&(opening_span, actual_nesting)) = self.nesting_stack.last() {
+            if actual_nesting.closing_token() == tk.kind {
+                self.nesting_stack.pop();
+                Ok(tk.kind)
+            } else {
+                Err(LexError::MismatchedClosing {
+                    span: tk.span,
+                    expected_closing: actual_nesting.closing_token(),
+                    opening_token: actual_nesting.opening_token().spanned(opening_span),
+                    actual_closing: tk,
+                })
+            }
+        } else {
+            Err(LexError::ClosingWithoutOpening {
+                span: tk.span,
+                actual_closing: tk
+            })
+        }
     }
     #[allow(unused)]
     pub fn try_next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
@@ -466,13 +551,20 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             // Lets do some post processing ;)
             let token = match self.raw_lexer.next() {
                 Some(val) => val,
-                None => return Ok(None) // EOF
+                None => {
+                    self.ensure_finished()?;
+                    return Ok(None) // EOF
+                }
             };
             return Ok(Some(translate_tokens!(token;
                 EscapedNewline => {
                     continue 'yum;
                 },
                 RawNewline => {
+                    if !self.nesting_stack.is_empty() {
+                        // implicit line continuation: don't generate a newline character
+                        continue 'yum;
+                    }
                     self.starting_line = true;
                     // TODO: Do we need to do anything else?
                     Token::Newline
@@ -493,6 +585,24 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                 StartString(style) => {
                     Token::StringLiteral(self.lex_string(style)?)
                 },
+                OpenParen => {
+                    self.open_nesting(Token::OpenParen.spanned(self.current_span()))?
+                },
+                CloseParen => {
+                    self.close_nesting(Token::CloseParen.spanned(self.current_span()))?
+                },
+                OpenBracket => {
+                    self.open_nesting(Token::OpenBracket.spanned(self.current_span()))?
+                },
+                CloseBracket => {
+                    self.close_nesting(Token::CloseBracket.spanned(self.current_span()))?
+                },
+                OpenBrace => {
+                    self.open_nesting(Token::OpenBrace.spanned(self.current_span()))?
+                },
+                CloseBrace => {
+                    self.close_nesting(Token::CloseBrace.spanned(self.current_span()))?
+                },
                 // keywords
                 False, Await, Else, Import, Pass, None,
                 True, Class, Finally, Is, Return, And,
@@ -505,8 +615,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                 Percent, At, LeftShift, RightShift, Ampersand,
                 BitwiseOr, BitwiseXor, BitwiseInvert, AssignOperator,
                 LessThan, GreaterThan, LessThanOrEqual, GreaterThanOrEqual,
-                DoubleEquals, NotEquals, OpenParen, CloseParen,
-                OpenBracket, CloseBracket, OpenBrace, CloseBrace,
+                DoubleEquals, NotEquals,
                 Comma, Colon, Period, Semicolon, Equals, Arrow,
                 PlusEquals, MinusEquals, StarEquals, SlashEquals,
                 DoubleSlashEquals, PercentEquals, AtEquals,
@@ -792,6 +901,15 @@ pub enum Token<'arena> {
     /// A logical newline
     Newline,
 }
+impl<'a> Token<'a> {
+    #[inline]
+    pub fn spanned(&self, span: Span) -> SpannedToken<'a> {
+        SpannedToken {
+            kind: *self,
+            span, marker: PhantomData
+        }
+    }
+}
 impl<'a> IToken<'a> for Token<'a> {
     type Kind = TokenKind;
 
@@ -806,9 +924,7 @@ impl<'a> IToken<'a> for Token<'a> {
 }
 #[derive(Copy, Clone, Debug)]
 pub enum TokenKind {}
-impl ITokenKind for TokenKind {
-
-}
+impl ITokenKind for TokenKind {}
 impl Display for TokenKind {
     fn fmt(&self, _f: &mut Formatter) -> fmt::Result {
         match *self {}

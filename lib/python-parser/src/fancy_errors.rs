@@ -13,26 +13,54 @@ impl FancyErrorTarget for LexError {
         match *self {
             LexError::InvalidToken { span: _ } => "Invalid token".to_string(),
             LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => format!("String failed to parse: {}", cause.build_fancy_message(ctx))
+            LexError::InvalidString(ref cause) => format!("String failed to parse: {}", cause.build_fancy_message(ctx)),
+            LexError::UnclosedNesting { span: _, opening_token, expected_closing: _ } => {
+                format!("Unclosed token {}", opening_token.kind)
+            },
+            LexError::MismatchedClosing { span: _, opening_token, expected_closing, actual_closing } => {
+                format!("Closing token {} doesn't correspond to opening token {} (expected a closing {})", actual_closing.kind, opening_token.kind, expected_closing)
+            }
+            LexError::ClosingWithoutOpening { span: _, actual_closing } => {
+                format!("Closing token {} doesn't correspond to any opening token", actual_closing)
+            }
         }
     }
 
     fn build_fancy_labels(&self, ctx: &FancyErrorContext) -> Vec<Label<FancySpan>> {
+        let tracker = ctx.tracker;
         match *self {
             LexError::InvalidToken { span } => {
                 vec![Label::new(span.resolve_fancy(ctx.tracker))
                     .with_message("This text")]
             }
             LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => cause.build_fancy_labels(ctx)
+            LexError::InvalidString(ref cause) => cause.build_fancy_labels(ctx),
+            LexError::UnclosedNesting { span: _, opening_token, expected_closing: _ } => {
+                vec![Label::new(opening_token.span.resolve_fancy(tracker))
+                    .with_message("This opening token")]
+            }
+            LexError::MismatchedClosing { span: _, opening_token, expected_closing: _, actual_closing } => {
+                vec![
+                    Label::new(actual_closing.span.resolve_fancy(tracker)).with_message("This closing token"),
+                    Label::new(opening_token.span.resolve_fancy(tracker)).with_priority(-2).with_message("Detected opening")
+                ]
+            }
+            LexError::ClosingWithoutOpening { span: _, actual_closing } => {
+                vec![
+                    Label::new(actual_closing.span.resolve_fancy(tracker)).with_message("This closing token")
+                ]
+            }
         }
     }
 
     fn overall_span(&self, ctx: &FancyErrorContext) -> FancySpan {
         match *self {
+            LexError::UnclosedNesting { span, .. } |
+            LexError::MismatchedClosing { span, .. } |
+            LexError::ClosingWithoutOpening { span, .. } |
             LexError::InvalidToken { span } => span.resolve_fancy(ctx.tracker),
             LexError::AllocFailed => unreachable!(),
-            LexError::InvalidString(ref cause) => cause.overall_span(ctx)
+            LexError::InvalidString(ref cause) => cause.overall_span(ctx),
         }
     }
 }
