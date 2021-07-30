@@ -181,7 +181,12 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 (parser.func)(&mut *self, &tk)?
             },
             _ => {
-                return Err(self.parser.unexpected(&"an expression"))
+                let err = self.parser.unexpected(&"an expression");
+                if let Some(tk) = token {
+                    return Err(err.with_actual_msg(format!("a {:?} token", tk.kind)))
+                } else {
+                    return Err(err.with_actual_msg("end of input"))
+                }
             }
         };
         loop {

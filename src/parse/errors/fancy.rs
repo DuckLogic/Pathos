@@ -147,8 +147,8 @@ impl FancyErrorTarget for ParseError {
         if !message.ends_with('.') {
             message.push('.');
         }
-        if let (&Some(ref expected), &None) = (&self.0.expected, &self.0.actual) {
-            message.push_str(" Expected");
+        if let (&Some(ref expected), Some(_)) = (&self.0.expected, &self.0.actual) {
+            message.push_str(" Expected ");
             message.push_str(&**expected);
             message.push('.');
         }
@@ -156,14 +156,14 @@ impl FancyErrorTarget for ParseError {
     }
 
     fn build_fancy_labels(&self, ctx: &FancyErrorContext) -> Vec<Label<FancySpan>> {
-        let label_message = if let Some(ref expected) = self.0.expected {
-            expected.clone()
-        } else if let Some(ref actual) = self.0.actual {
-            actual.clone()
+        let label_message = if let Some(ref actual) = self.0.actual {
+            format!("Actually got {}", actual.clone())
+        } else if let Some(ref expected) = self.0.expected {
+            format!("Expected {}", expected.clone())
         } else {
             match self.0.kind {
-                ParseErrorKind::InvalidToken => "This text".to_string(),
-                ParseErrorKind::InvalidExpression => "This expression".to_string(),
+                ParseErrorKind::InvalidToken => "Actually got this text".to_string(),
+                ParseErrorKind::InvalidExpression => "Actually got this expression".to_string(),
                 ParseErrorKind::AllocationFailed => unreachable!(),
                 ParseErrorKind::UnexpectedEof | ParseErrorKind::UnexpectedEol => return vec![],
                 ParseErrorKind::UnexpectedToken => "This token".to_string(),

@@ -74,6 +74,8 @@ struct LineCache {
     /// This should include the `\n` at the end of the line,
     /// unless this is the end of the file (then the whole thing should be empty)
     end: u64,
+    /// The number of chars before the start of this line
+    char_offset: u64,
     /// The character boundaries of a line,
     /// implemented as a bitset (only present if the line isn't entirely ASCII)
     character_boundaries: Option<FixedBitSet>
@@ -81,6 +83,7 @@ struct LineCache {
 impl LineCache {
     fn first_line() -> LineCache {
         LineCache {
+            char_offset: 0,
             start: 0,
             end: 0,
             character_boundaries: None
@@ -94,6 +97,10 @@ impl LineCache {
     #[inline]
     fn num_bytes(&self) -> u64 {
         self.end - self.start
+    }
+    #[inline]
+    fn char_len(&self) -> u64 {
+        self.count_chars(self.num_bytes() as usize) as u64
     }
     /// Extend this line's length by the specified amount
     fn extend_len(&mut self, amount: u64) {
@@ -161,6 +168,10 @@ impl LineTracker {
     pub fn total_bytes(&self) -> u64 {
         self.lines.last().unwrap().end
     }
+    pub fn total_chars(&self) -> u64 {
+        let last = self.lines.last().unwrap();
+        last.char_offset + last.count_chars(last.num_bytes() as usize) as u64
+    }
     #[inline]
     pub fn num_lines(&self) -> usize {
         self.lines.len()
@@ -171,7 +182,7 @@ impl LineTracker {
     }
     pub fn char_index(&self, location: DetailedLocation) -> u64 {
         let line = &self.lines[location.line_number.get() as usize - 1];
-        line.count_chars(location.column as usize) as u64
+        line.char_offset + line.count_chars(location.column as usize) as u64 - 1
     }
     /// Resolve a byte-based index into a detailed location
     pub fn resolve_position(&self, pos: Position) -> DetailedLocation {
@@ -235,7 +246,9 @@ impl LineTracker {
                 boundaries.set(new_len, true)
             }
         }
+        let char_offset = last_line.char_offset + last_line.char_len();
         self.lines.push(LineCache {
+            char_offset,
             start: line_start, end: line_start,
             character_boundaries: None
         });
@@ -336,6 +349,10 @@ impl ParseError {
     #[cold]
     pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
         self.0.expected = Some(msg.to_string());
+        self
+    }
+    pub fn with_actual_msg<T: ToString>(mut self, msg: T) -> Self {
+        self.0.actual = Some(msg.to_string());
         self
     }
     #[inline]
@@ -492,6 +509,7 @@ mod test {
         assert_eq!(LineTracker::from_text("").lines[0].num_bytes(), 0);
         let mut tracker = LineTracker::from_text("All cows eat grass");
         assert_eq!(tracker.lines[0], LineCache {
+            char_offset: 0,
             start: 0,
             end: 18,
             character_boundaries: None

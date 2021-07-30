@@ -1,3 +1,4 @@
+#![feature(backtrace)]
 use clap::{Clap, ArgGroup, ValueHint, AppSettings};
 use pathos_python_parser::ParseMode;
 use std::path::{PathBuf};
@@ -13,6 +14,7 @@ use std::io::{Read, Write};
 use pathos_python_parser::lexer::{PythonLexer, LineTracker};
 use pathos_python_parser::parse::errors::fancy::FancyErrorContext;
 use ariadne::Source;
+use std::error::Error as StdError;
 
 /// Command line interface to the Pathos python parser
 ///
@@ -158,6 +160,15 @@ fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
                 tracker: &tracker
             };
             ctx.report_error(&parse_error).eprint(source)?;
+            if let Some(bt) = parse_error.backtrace() {
+                eprint!("Backtrace:");
+                if options.print_error_backtrace {
+                    eprintln!();
+                    eprintln!("{}", bt);
+                } else {
+                    eprintln!(" None")
+                }
+            }
             std::process::exit(1);
         }
     };
@@ -214,6 +225,11 @@ struct DumpAstOptions {
     /// Give verbose output
     #[clap(long, short = 'v')]
     verbose: bool,
+    /// Print the internal backtrace of errors
+    ///
+    /// This should only be used during debugging of the parser's internals.
+    #[clap(long, alias = "backtrace")]
+    print_error_backtrace: bool,
     /// The format to output the parsed AST in
     ///
     /// By default, this is inferred
