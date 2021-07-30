@@ -15,4 +15,8 @@ clap = "3.0.0-beta.2"
 tempfile = "3"
 anyhow = "1"
 pathos-python-parser = { path = "../python-parser" }
+serde_json = "1"
 pathos-python-ast = { path = "../python-ast", features = ["serialize", "json"] }
+pathos = { path = "../..", features = ["fancy-errors"] }
+bumpalo = "3"
+ariadne = "0.1.3"

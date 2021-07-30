@@ -34,6 +34,11 @@ pub enum ErrorSpan {
     AllocationFailed,
     Span(Span)
 }
+impl From<Span> for ErrorSpan {
+    fn from(s: Span) -> Self {
+        ErrorSpan::Span(s)
+    }
+}
 impl ErrorSpan {
     #[track_caller]
     pub fn unwrap(&self) -> Span {

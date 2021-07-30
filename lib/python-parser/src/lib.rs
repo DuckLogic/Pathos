@@ -1,19 +1,27 @@
+#![feature(backtrace)]
+
 use pathos::errors::ParseError;
 
 use pathos::alloc::Allocator;
-use pathos_python_ast::constants::ConstantPool;
 use pathos::ast::{Ident, Symbol};
-use pathos_python_ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
-use pathos::lexer::Token;
-
+use pathos::ast::ident::SymbolTable;
 use pathos::ast::{Span, Spanned};
 use pathos::errors::ParseErrorKind;
+use pathos::parser::{IParser};
 
-pub use self::expr::ExprPrec;
+use pathos_python_ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
+use pathos_python_ast::constants::ConstantPool;
 
-mod lexer;
+use crate::lexer::{Token, PythonLexer};
+
+pub use pathos_python_ast::ExprPrec;
+use pathos::Pathos;
+
+pub mod lexer;
 mod expr;
 mod stmt;
+
+pub type Parser<'src, 'a> = pathos::parser::Parser<'a, PythonLexer<'src, 'a>>;
 
 /// The mode of operation to parse the code in
 ///
@@ -24,13 +32,20 @@ pub enum ParseMode {
     Module
 }
 
+impl<'src, 'a, 'p> Pathos<'a> for PythonParser<'src, 'a, 'p> {
+    type Lexer = PythonLexer<'src, 'a>;
+
+    fn alloc(&self) -> &'a Allocator {
+        self.arena
+    }
+}
 pub fn parse_text<'a, 'src>(
     arena: &'a Allocator,
     text: &'src str,
     mode: ParseMode,
     pool: &mut ConstantPool<'a>,
     symbol_table: &mut SymbolTable<'a>
-) -> Result<ast::tree::PythonAst<'a>, ParseError> {
+) -> Result<pathos_python_ast::tree::PythonAst<'a>, ParseError> {
     let lexer = PythonLexer::new(
         arena,
         std::mem::replace(symbol_table, SymbolTable::new(arena)), // take it from them
@@ -60,7 +75,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         }
     }
     pub fn parse_top_level(&mut self, mode: ParseMode) -> Result<PythonAst<'a>, ParseError> {
-        use crate::alloc::Vec;
+        use pathos::alloc::Vec;
         match mode {
             ParseMode::Expression => Ok(PythonAst::Expression {
                 body: self.expression()?
@@ -117,7 +132,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// This corresponds to the "parameter_list" in the grammar of function definitions:
     /// <https://docs.python.org/3.10/reference/compound_stmts.html#function-definitions>
     pub fn parse_argument_declarations(&mut self, ending_token: Token<'a>, opts: ArgumentParseOptions) -> Result<&'a Arguments<'a>, ParseError>{
-        use crate::alloc::Vec;
+        use pathos::alloc::Vec;
         let start = self.parser.current_span().start;
         /*
          * NOTE: It is possible we are empty, in which case our span doesn't even include
@@ -348,7 +363,10 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         })
     }
 }
-impl<'src, 'a, 'p> IParser<'src, 'a> for PythonParser<'src, 'a, 'p> {
+impl<'src, 'a, 'p> IParser<'a> for PythonParser<'src, 'a, 'p> {
+    type Token = Token<'a>;
+    type Lexer = PythonLexer<'src, 'a>;
+
     #[inline]
     fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a> {
         &mut self.parser
@@ -356,12 +374,6 @@ impl<'src, 'a, 'p> IParser<'src, 'a> for PythonParser<'src, 'a, 'p> {
     #[inline]
     fn as_parser(&self) -> &Parser<'src, 'a> {
         &self.parser
-    }
-}
-impl Default for ExprContext {
-    #[inline]
-    fn default() -> Self {
-        ExprContext::Load
     }
 }
 #[derive(Copy, Clone, Debug)]
@@ -400,11 +412,11 @@ impl Default for DefaultArgumentHandling<'_> {
 #[cfg(test)]
 pub mod test {
     use super::*;
-    use crate::ast::{AstBuilder, Constant};
+    use pathos_python_ast::{AstBuilder, constants::Constant};
     use std::cell::RefCell;
-    use crate::ast::ident::SymbolTable;
-    use crate::ast::tree::{Expr, ExprKind, Operator};
-    use crate::ast::constants::{StringStyle, StringLiteral};
+    use pathos::ast::ident::SymbolTable;
+    use pathos_python_ast::tree::{Expr, ExprKind, Operator};
+    use pathos_python_ast::constants::{StringStyle, StringLiteral};
     use crate::lexer::PythonLexer;
     use bumpalo::Bump;
 

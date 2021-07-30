@@ -3,8 +3,9 @@ use std::error::Error;
 use ariadne::{Report, ReportKind, Label};
 
 use super::ParseError;
-use crate::parse::errors::{ParseErrorKind, MaybeSpan};
-use crate::lexer::{LineTracker, StringError, StringErrorKind, LexError};
+use crate::errors::{ParseErrorKind, MaybeSpan};
+use crate::errors::tracker::LineTracker;
+use crate::lexer::{StringError, StringErrorKind, LexError};
 use crate::ast::Span;
 
 #[derive(Debug, Copy, Clone)]
@@ -127,8 +128,8 @@ impl FancyErrorTarget for ParseError {
 
     fn build_fancy_message(&self, ctx: &FancyErrorContext) -> String {
         let mut message = match self.0.kind {
-            ParseErrorKind::InvalidToken => {
-                "Invalid token.".to_string()
+            ParseErrorKind::UnexpectedToken => {
+                "Unexpected token.".to_string()
             }
             ParseErrorKind::InvalidExpression => {
                 "Invalid expression.".to_string()
@@ -142,8 +143,10 @@ impl FancyErrorTarget for ParseError {
             }
             ParseErrorKind::UnexpectedToken => {
                 "Unexpected token.".to_string()
+            },
+            ParseErrorKind::Lexer(ref l) => {
+                l.to_string()
             }
-            ParseErrorKind::InvalidString(ref s) => s.build_fancy_message(ctx),
         };
         if !message.ends_with('.') {
             message.push('.');
@@ -168,7 +171,7 @@ impl FancyErrorTarget for ParseError {
                 ParseErrorKind::AllocationFailed => unreachable!(),
                 ParseErrorKind::UnexpectedEof | ParseErrorKind::UnexpectedEol => return vec![],
                 ParseErrorKind::UnexpectedToken => "This token".to_string(),
-                ParseErrorKind::InvalidString(ref cause) => return cause.build_fancy_labels(ctx),
+                ParseErrorKind::Lexer(ref cause) => return cause.build_fancy_labels(ctx),
             }
         };
         vec![Label::new(self.overall_span(ctx)).with_message(label_message)]

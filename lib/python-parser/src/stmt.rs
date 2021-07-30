@@ -1,18 +1,19 @@
-use crate::parse::{PythonParser, ArgumentParseOptions};
-use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
+use crate::{PythonParser, ArgumentParseOptions};
+use pathos_python_ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
 use crate::lexer::Token;
-use crate::ParseError;
-use crate::ast::{Spanned, Span, AstNode, Position};
-use crate::parse::parser::{ParseSeperated, Parser, IParser, EndFunc, ParseSeperatedConfig};
+use pathos::errors::ParseError;
+use pathos::ast::{Spanned, Span, AstNode, Position};
+use pathos::parser::{ParseSeperated, IParser, EndFunc, ParseSeperatedConfig};
 /*
  * Override the global `std::alloc::Vec` with our `crate::alloc::Vec`.
  * This is needed because we use a limiting, arena-allocator.
  */
-use crate::alloc::Vec;
+use pathos::alloc::Vec;
 use std::num::NonZeroU32;
-use crate::parse::expr::ExprList;
-use crate::parse::errors::ParseErrorKind;
-use crate::vec;
+use crate::expr::ExprList;
+use pathos::errors::ParseErrorKind;
+use pathos::vec;
+use crate::Parser;
 
 impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     pub fn statement(&mut self) -> Result<Stmt<'a>, ParseError> {

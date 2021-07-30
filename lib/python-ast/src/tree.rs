@@ -676,6 +676,11 @@ pub enum ExprContext {
     Store,
     Del,
 }
+impl Default for ExprContext {
+    fn default() -> Self {
+        ExprContext::Load
+    }
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serialize", derive(Serialize))]

@@ -5,16 +5,19 @@ use std::path::{PathBuf};
 use anyhow::{Error, Context};
 use std::ffi::OsString;
 use tempfile::NamedTempFile;
-use pathos_python_parser::ast::{Allocator, Span};
+use pathos::ast::{Span};
+use pathos::alloc::Allocator;
 use bumpalo::Bump;
-use pathos_python_parser::ast::constants::ConstantPool;
-use pathos_python_parser::ast::ident::SymbolTable;
+use pathos_python_ast::constants::ConstantPool;
+use pathos::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
-use pathos_python_parser::lexer::{PythonLexer, LineTracker};
-use pathos_python_parser::parse::errors::fancy::FancyErrorContext;
+use pathos_python_parser::lexer::{PythonLexer};
+use pathos::errors::fancy::FancyErrorContext;
+use pathos::errors::tracker::LineTracker;
 use ariadne::Source;
 use std::error::Error as StdError;
+use pathos::errors::SpannedError;
 
 /// Command line interface to the Pathos python parser
 ///

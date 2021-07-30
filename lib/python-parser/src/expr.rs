@@ -4,26 +4,25 @@
 //!
 //! See also [this (C) pratt parser, implemented in crafting interpreters](http://craftinginterpreters.com/compiling-expressions.html#parsing-prefix-expressions)
 //! See also [this example code](https://github.com/munificent/bantam)
-use std::ops::{Add, Sub};
-
-use crate::alloc::{Allocator, AllocError, Vec};
-use crate::ast::{Ident, Span, Spanned};
-use crate::ast::constants::FloatLiteral;
-use crate::ast::tree::*;
-use crate::lexer::Token;
-use crate::parse::errors::{ParseError, ParseErrorKind};
-use crate::vec;
-
-use super::parser::{IParser, SpannedToken};
-use super::PythonParser;
-use crate::parse::ArgumentParseOptions;
-use crate::parse::parser::{EndFunc, EndPredicate, ParseSeperated, ParseSeperatedConfig};
-use arrayvec::ArrayVec;
-use crate::ast::ident::Symbol;
 use std::cell::Cell;
 use std::iter::FusedIterator;
-use std::option::Option::None;
+
+use arrayvec::ArrayVec;
+
 use pathos_python_ast::ExprPrec;
+use pathos::alloc::{Allocator, AllocError, Vec};
+use pathos::ast::{Ident, Span, Spanned, Symbol};
+use pathos::errors::{ParseError, ParseErrorKind};
+use pathos::parser::{EndFunc, EndPredicate, ParseSeperated, ParseSeperatedConfig};
+
+use pathos_python_ast::constants::FloatLiteral;
+use pathos_python_ast::tree::*;
+
+use pathos::parser::{IParser};
+use super::PythonParser;
+use crate::ArgumentParseOptions;
+use pathos::vec;
+use crate::lexer::{SpannedToken, Token, FromTokenError, PythonLexer, OperatorExt};
 
 struct PrefixParser<'src, 'a, 'p> {
     func: fn(
@@ -215,7 +214,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// Therefore, we keep this function public to allow those two special-cases.
     ///
     /// See docs: <https://docs.python.org/3.10/reference/expressions.html#yield-expressions>
-    pub fn parse_yield_expr(&mut self, mut end_func: impl EndPredicate<'src, 'a>) -> Result<Expr<'a>, ParseError> {
+    pub fn parse_yield_expr(&mut self, mut end_func: impl EndPredicate<'a, Token<'a>, PythonLexer<'src , 'a>>) -> Result<Expr<'a>, ParseError> {
         let original_keyword_span = self.parser.expect(Token::Yield)?.span;
         let start = original_keyword_span.start;
         if let Some(Token::From) = self.parser.peek() {
@@ -284,7 +283,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         match *left {
             ExprKind::Name { .. } => {},
             _ => {
-                return Err(ParseError::builder(left.span(), ParseErrorKind::InvalidToken)
+                return Err(ParseError::builder(left.span(), ParseErrorKind::UnexpectedToken)
                     .expected("An identifier for `:=`")
                     .actual("A more complicated expression")
                     .build());
@@ -436,7 +435,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
              * It's all together as a single big array.
              */
             res.push(self.parse_prec(op.precedence())?)?;
-            if self.parser.peek() == Some(op.token())  {
+            if self.parser.peek() == Some(op.token().unwrap())  {
                 self.parser.skip();
                 continue;
             } else {
@@ -562,7 +561,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     }
     fn binary_op(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         let op = match Operator::from_token(&tk.kind) {
-            Some(it) => it,
+            Ok(it) => it,
             _ => unreachable!(),
         };
         let mut min_prec = op.precedence();
@@ -594,10 +593,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         })?)
     }
     fn unary_op(&mut self, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
-        let op = match UnaryOp::from_token(&tk.kind) {
-            Some(op) => op,
-            None => unreachable!()
-        };
+        let op = UnaryOp::from_token(&tk.kind).unwrap();
         let right = self.parse_prec(op.precedence())?;
         let span = Span {
             start: tk.span.start,
@@ -623,7 +619,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             Token::False => self.pool.bool(span, false)?,
             Token::None => self.pool.none(span)?,
             Token::StringLiteral(lit) => {
-                if let Some(crate::ast::constants::StringPrefix::Unicode) = lit.style.prefix {
+                if let Some(pathos_python_ast::constants::StringPrefix::Unicode) = lit.style.prefix {
                     kind = Some("u");
                 }
                 self.pool.string(span, *lit)?
@@ -684,7 +680,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     /// The closure is necessary to avoid backtracking.
     ///
     /// Implicitly converts a list to a tuple expression (with the appropriate [ExprContext])
-    pub fn parse_target_list<P>(&mut self, mut should_end: P) -> Result<ExprList<'a>, ParseError> where P: EndPredicate<'src, 'a> {
+    pub fn parse_target_list<P>(&mut self, mut should_end: P) -> Result<ExprList<'a>, ParseError> where P: EndPredicate<'a, Token<'a>, PythonLexer<'src, 'a>> {
         let first = self.parse_target()?;
         if should_end.should_end(&self.parser) {
             return Ok(ExprList::Single {
@@ -710,7 +706,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             slice: res.into_slice()
         })
     }
-    pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_pred: impl EndPredicate<'src, 'a>) -> Result<ExprList<'a>, ParseError> {
+    pub fn parse_expression_list(&mut self, allow_empty: bool, mut end_pred: impl EndPredicate<'a, Token<'a>, PythonLexer<'src, 'a>>) -> Result<ExprList<'a>, ParseError> {
         // TODO: Use parse_seperated????
         if allow_empty && end_pred.should_end(&self.parser) {
             return Ok(ExprList::Empty)

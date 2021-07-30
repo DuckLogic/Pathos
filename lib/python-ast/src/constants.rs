@@ -545,7 +545,7 @@ impl QuoteStyle {
     }
 }
 
-pub(crate) trait BigIntInternal: std::fmt::Display + Default {
+pub trait BigIntInternal: std::fmt::Display + Default {
     type ParseRadixError: std::error::Error;
     fn parse_radix(radix: u32, s: &str) -> Result<Self, Self::ParseRadixError>;
 }

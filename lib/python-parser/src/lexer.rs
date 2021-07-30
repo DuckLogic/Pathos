@@ -4,15 +4,28 @@ use std::hash::{Hash, Hasher};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::num::ParseIntError;
+use std::backtrace::Backtrace;
+use std::error::Error;
 
-use crate::alloc::{Allocator, AllocError};
-use crate::ast::constants::StringLiteral;
+use logos::{Logos, Lexer};
+use either::Either;
 use thiserror::Error;
 
-use either::Either;
+use pathos::errors::{SpannedError, ErrorSpan};
+use pathos::ast::Span;
+use pathos::ast::ident::{SymbolTable, Symbol};
+use pathos::lexer::{Token as IToken, TokenKind as ITokenKind, Lexer as ILexer, LexerError as ILexerError};
+use pathos::alloc::{Allocator, AllocError};
 
-pub trait OperatorExt {
-    fn from_token(tk: &Token) -> Option<Self>;
+use pathos_python_ast::constants::StringLiteral;
+use pathos_python_ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
+use pathos_python_ast::tree::{UnaryOp, Operator, BoolOp, ComparisonOp};
+use pathos_unicode::NameResolveError;
+
+pub type SpannedToken<'a> = pathos::lexer::SpannedToken<'a, Token<'a>>;
+
+pub trait OperatorExt: Sized {
+    fn from_token(tk: &Token) -> Result<Self, FromTokenError>;
     #[inline]
     fn token<'a>(&self) -> Option<Token<'a>> {
         None
@@ -28,16 +41,16 @@ impl OperatorExt for BoolOp {
         })
     }
     #[inline]
-    fn token<'a>(self) -> Token<'a> {
-        match self {
+    fn token<'a>(&self) -> Option<Token<'a>> {
+        Some(match self {
             BoolOp::And => Token::And,
             BoolOp::Or => Token::Or
-        }
+        })
     }
 }
 impl OperatorExt for Operator {
     #[inline]
-    fn from_token(tk: &Token) -> Option<Self> {
+    fn from_token(tk: &Token) -> Result<Self, FromTokenError> {
         Ok(match *tk {
             Token::Plus => Operator::Add,
             Token::Minus => Operator::Sub,
@@ -188,17 +201,6 @@ macro_rules! tk {
     (**=) => (Token::DoubleStarEquals);
 }
 
-use logos::{Logos, Lexer};
-
-use crate::ast::{Span};
-use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
-use crate::ast::ident::{SymbolTable, Symbol};
-use crate::ast::tree::Operator;
-
-pub use crate::parse::errors::LineTracker;
-use std::backtrace::Backtrace;
-use std::error::Error;
-use pathos_python_ast::tree::{UnaryOp, Operator, BoolOp, ComparisonOp};
 
 /// A python identifier
 ///
@@ -282,12 +284,25 @@ pub enum LexError {
     #[error("Invalid string: {0}")]
     InvalidString(#[source] StringError)
 }
-impl LexError {
-    pub fn span(&self) -> Option<Span> {
+impl SpannedError for LexError {
+    fn span(&self) -> ErrorSpan {
         match *self {
-            LexError::InvalidToken { span, .. } => Some(span),
-            LexError::AllocFailed => None,
-            LexError::InvalidString(ref cause) => cause.span,
+            LexError::InvalidToken { span, .. } => ErrorSpan::Span(span),
+            LexError::AllocFailed => ErrorSpan::AllocationFailed,
+            LexError::InvalidString(ref cause) => cause.span(),
+        }
+    }
+}
+impl ILexerError for LexError {
+    fn upcast(&self) -> &(dyn Error + 'static) {
+        self
+    }
+
+    fn cast_alloc_failed(&self) -> Option<&AllocError> {
+        match *self {
+            LexError::InvalidToken { .. } |
+            LexError::InvalidString(_) => None,
+            LexError::AllocFailed => Some(&AllocError)
         }
     }
 }
@@ -519,13 +534,13 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             let span = string_start.with_len(style.quote_style.len());
             StringError {
                 kind: StringErrorKind::MissingEnd,
-                span: Some(span), backtrace: Backtrace::capture(),
+                span: span.into(), backtrace: Backtrace::capture(),
                 entire_string_span: None
             }
         })?;
         // TODO: Is the 'estimated_size' ever incorrect?
         let entire_string_span = string_start.with_len(estimated_size);
-        let mut buffer = crate::alloc::String::with_capacity(
+        let mut buffer = pathos::alloc::String::with_capacity(
             self.arena,
             estimated_size
         )?;
@@ -538,7 +553,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             let give_error = |span: Span, kind: StringErrorKind| {
                 StringError {
                     kind, backtrace: Backtrace::capture(),
-                    span: Some(span), entire_string_span: Some(entire_string_span)
+                    span: span.into(), entire_string_span: Some(entire_string_span)
                 }
             };
             match tk.interpret() {
@@ -574,23 +589,16 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                         buffer.push_str(sub_lexer.slice())?;
                         continue;
                     }
-                    if cfg!(feature = "unicode-named-escapes") {
-                        let upper = name.to_uppercase();
-                        let res: Option<char>;
-                        #[cfg(feature = "unicode-named-escapes")] {
-                            res = crate::unicode_names::NAMES.binary_search_by_key(&upper.as_str(), |&(name, _)| name)
-                                .ok().map(|index| crate::unicode_names::NAMES[index].1)
-                        }
-                        #[cfg(not(feature = "unicode-named-escapes"))] {
-                            res = unreachable!();
-                        }
-                        buffer.push(res.ok_or_else(|| {
+                    let upper = name.to_uppercase();
+                    match pathos_unicode::resolve_name(&upper) {
+                        Ok(c) => buffer.push(c)?,
+                        Err(reason) => {
                             self.raw_lexer.bump(relative_span.start.0 as usize);
-                            give_error(span, StringErrorKind::InvalidNamedEscape)
-                        })?)?;
-                    } else {
-                        self.raw_lexer.bump(relative_span.start.index());
-                        return Err(give_error(span, StringErrorKind::UnsupportedNamedEscape))
+                            return Err(give_error(span, match reason {
+                                NameResolveError::Unsupported => StringErrorKind::UnsupportedNamedEscape,
+                                NameResolveError::UnknownName => StringErrorKind::InvalidNamedEscape
+                            }))
+                        }
                     }
                 },
                 InterpretedStringPart::UnescapedQuote(quote) => {
@@ -644,7 +652,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         }
         Err(StringError {
             entire_string_span: None,
-            span: Some(entire_string_span),
+            span: entire_string_span.into(),
             kind: StringErrorKind::MissingEnd,
             backtrace: Backtrace::capture()
         })
@@ -652,6 +660,22 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     #[inline]
     pub fn into_symbol_table(self) -> SymbolTable<'arena> {
         self.symbol_table
+    }
+}
+impl<'src, 'a> ILexer<'a> for PythonLexer<'src, 'a> {
+    type Error = LexError;
+    type Token = Token<'a>;
+
+    fn original_text(&self) -> &str {
+        self.raw_lexer.source()
+    }
+
+    fn current_span(&self) -> Span {
+        self.current_span()
+    }
+
+    fn try_next(&mut self) -> Result<Option<Self::Token>, Self::Error> {
+        self.try_next()
     }
 }
 
@@ -767,6 +791,28 @@ pub enum Token<'arena> {
     DecreaseIndent,
     /// A logical newline
     Newline,
+}
+impl<'a> IToken<'a> for Token<'a> {
+    type Kind = TokenKind;
+
+    fn kind(&self) -> Self::Kind {
+        todo!()
+    }
+
+    #[inline]
+    fn is_newline(&self) -> bool {
+        matches!(*self, Token::Newline)
+    }
+}
+#[derive(Copy, Clone, Debug)]
+pub enum TokenKind {}
+impl ITokenKind for TokenKind {
+
+}
+impl Display for TokenKind {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match *self {}
+    }
 }
 impl<'a> Token<'a> {
     /// If this token is an augmented assignment operator (`+=`, `*=`, etc),
@@ -1151,14 +1197,6 @@ enum RawToken<'src> {
     EscapedNewline
 }
 
-impl<'src> RawToken<'src> {
-
-}
-
-impl<'src> RawToken<'src> {
-
-}
-
 fn skip_comment<'a>(lex: &mut Lexer<'a, RawToken<'a>>) -> logos::Skip {
     debug_assert_eq!(lex.slice(), "#");
     if let Some(line_end) = ::memchr::memchr(b'\n', lex.remainder().as_bytes()) {
@@ -1184,7 +1222,7 @@ fn ident<'src>(lex: &mut Lexer<'src, RawToken<'src>>) -> &'src str {
 fn fallback_parse_int(
     radix: i64, text: &str
 ) -> BigInt {
-    use crate::ast::constants::BigIntInternal;
+    use pathos_python_ast::constants::BigIntInternal;
     /*
      * We get here if the regular integer parse code overflows.
      *
@@ -1462,9 +1500,15 @@ pub struct StringError {
     /// This may be `None` even if the primary of the span is `Some`
     pub entire_string_span: Option<Span>,
     /// The span of the error, or `None` if this is an allocation-failed error
-    pub span: Option<Span>,
+    pub span: ErrorSpan,
     pub kind: StringErrorKind,
     backtrace: Backtrace,
+}
+impl SpannedError for StringError {
+    #[inline]
+    fn span(&self) -> ErrorSpan {
+        self.span
+    }
 }
 impl Error for StringError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
@@ -1511,7 +1555,7 @@ impl From<AllocError> for StringError {
         StringError {
             kind: StringErrorKind::AllocFailed,
             backtrace: Backtrace::capture(),
-            span: None,
+            span: ErrorSpan::AllocationFailed,
             entire_string_span: None
         }
     }
