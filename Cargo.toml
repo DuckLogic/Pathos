@@ -28,7 +28,9 @@ serialize = ["serde", "serde_derive", "serde_with", "rug/serde", "num-bigint/ser
 # Support json serialization (using serde)
 json = ["serialize", "serde_json"]
 # CLI support
-cli = ["clap", "json", "serialize", "anyhow", "tempfile"]
+cli = ["clap", "json", "serialize", "anyhow", "tempfile", "fancy-errors"]
+# Fancier errors
+fancy-errors = ["ariadne"]
 
 [dependencies]
 logos = "0.12"
@@ -48,6 +50,8 @@ educe = "0.4"
 # Errors
 thiserror = "1"
 anyhow = { version = "1", optional = true }
+# Fancy errors (optional)
+ariadne = { version = "0.1.2", optional = true }
 # Serde support
 serde = { version = "1", optional = true }
 serde_derive = { version = "1", optional = true }

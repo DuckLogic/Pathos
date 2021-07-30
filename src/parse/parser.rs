@@ -2,7 +2,7 @@ use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use crate::alloc::{Allocator};
+use crate::alloc::{Allocator, AllocError};
 use crate::ast::Span;
 use crate::lexer::{LexError, PythonLexer, Token};
 use crate::parse::errors::{ParseError, ParseErrorKind, LineTracker};
@@ -307,6 +307,8 @@ pub struct Parser<'src, 'a> {
     /// and there is no point asking for more.
     eof: bool,
     lexer: PythonLexer<'src, 'a>,
+    // TODO: Encapsulate
+    pub line_tracker: LineTracker,
 }
 
 impl<'src, 'a> Parser<'src, 'a> {
@@ -321,12 +323,13 @@ impl<'src, 'a> Parser<'src, 'a> {
 
 impl<'src, 'a> Parser<'src, 'a> {
     pub fn new(_arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
+        let line_tracker = LineTracker::from_text(lexer.original_text());
         let mut res = Parser {
             lexer, buffer: Vec::with_capacity(32),
             eof: false,
             current_index: 0,
+            line_tracker
         };
-        res.lexer.line_tracker = Some(LineTracker::new());
         res.next_line()?;
         Ok(res)
     }
@@ -421,15 +424,15 @@ impl<'src, 'a> Parser<'src, 'a> {
                     break
                 },
                 Err(cause) => {
+                    let span = cause.span();
                     let kind = match cause {
                         LexError::AllocFailed => {
-                            // TODO: Handle OOM without boxing errors.....
-                            ParseErrorKind::AllocationFailed
+                            return Err(ParseError::from(AllocError))
                         },
-                        LexError::InvalidToken => ParseErrorKind::InvalidToken,
+                        LexError::InvalidToken { span: _ } => ParseErrorKind::InvalidToken,
                         LexError::InvalidString(cause) => ParseErrorKind::InvalidString(cause),
                     };
-                    return Err(ParseError::builder(lexer_span, kind).build());
+                    return Err(ParseError::builder(span.unwrap(), kind).build());
                 },
             };
             self.buffer.push(tk);
@@ -441,11 +444,6 @@ impl<'src, 'a> Parser<'src, 'a> {
         } else {
             Ok(Some(count))
         }
-    }
-    /// The line number tracker, to give more detailed errors
-    #[inline]
-    pub fn line_number_tracker(&self) -> &LineTracker {
-        self.lexer.line_tracker.as_ref().unwrap()
     }
     /// Check if the internal buffer is empty.
     ///

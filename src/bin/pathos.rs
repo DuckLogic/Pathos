@@ -11,6 +11,8 @@ use pathos_python_parser::ast::ident::SymbolTable;
 use anyhow::{bail};
 use std::io::{Read, Write};
 use pathos_python_parser::lexer::{PythonLexer, LineTracker};
+use pathos_python_parser::parse::errors::fancy::FancyErrorContext;
+use ariadne::Source;
 
 /// Command line interface to the Pathos python parser
 ///
@@ -53,11 +55,25 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
     let arena = Allocator::new(Bump::new());
     let symbols = SymbolTable::new(&arena);
     let mut lexer = PythonLexer::new(&arena, symbols, &text);
-    if !options.raw_spans {
-        lexer.line_tracker = Some(LineTracker::new());
-    }
-    let display_span = |lexer: &PythonLexer, span: Span| {
-        if let Some(ref tracker) = lexer.line_tracker {
+    let line_tracker = if !options.raw_spans {
+        Some(LineTracker::from_text(&text))
+    } else {
+        None
+    };
+    let fancy_source: Option<Source>;
+    let fancy_errors = if options.fancy_errors {
+        let line_tracker = line_tracker.as_ref().ok_or_else(|| anyhow::anyhow!("The --fancy-errors flag isn't compatible with --raw-span"))?;
+        fancy_source = Some(Source::from(&text));
+        Some(FancyErrorContext {
+            tracker: &line_tracker,
+            current_file: fancy_source.as_ref().unwrap(),
+        })
+    } else {
+        fancy_source = None;
+        None
+    };
+    let display_span = |span: Span| {
+        if let Some(ref tracker) = line_tracker {
             format!("{}", tracker.resolve_span(span))
         } else {
             format!("{}", span)
@@ -66,10 +82,18 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
     let mut raw_text = String::new();
     let mut quoted_text = String::new();
     while let Some((span, token)) = {
-        let span = lexer.current_span();
         match lexer.try_next() {
-            Ok(Some(tk)) => Some((span, tk)),
-            Err(err) => return Err(err).with_context(|| format!("Error at {}", display_span(&lexer, span))),
+            Ok(Some(tk)) => Some((lexer.current_span(), tk)),
+            Err(err) => {
+                if let Some(ref fancy_err_ctx) = fancy_errors {
+                    fancy_err_ctx.report_error(&err).eprint(fancy_source.unwrap())?;
+                    std::process::exit(1);
+                } else if let Some(span) = err.span() {
+                    return Err(err).with_context(|| format!("Error at {}", display_span(span)));
+                } else {
+                    return Err(err.into())
+                }
+            },
             Ok(None) => None
         }
     } {
@@ -108,7 +132,7 @@ fn tokenize(options: &TokenizeOptions) -> anyhow::Result<()> {
         } else {
             quoted_text.push('"');
         }
-        println!("{: <20}{}", display_span(&lexer, span), quoted_text);
+        println!("{: <20}{}", display_span(span), quoted_text);
     }
     Ok(())
 }
@@ -118,13 +142,25 @@ fn dump_ast(options: &DumpAstOptions) -> anyhow::Result<()> {
     let arena = Allocator::new(Bump::new());
     let mut pool = ConstantPool::new(&arena);
     let mut symbols = SymbolTable::new(&arena);
-    let ast = pathos_python_parser::parse_text(
+    let ast = match pathos_python_parser::parse_text(
         &arena,
         &text,
         options.parse_mode.clone().map_or_else(|| input.default_parse_mode(), ParseMode::from),
         &mut pool,
         &mut symbols
-    ).with_context(|| "Failed to parse input".to_string())?;
+    ) {
+        Ok(tree) => tree,
+        Err(parse_error) => {
+            let tracker = LineTracker::from_text(&text);
+            let source = Source::from(&text);
+            let ctx = FancyErrorContext {
+                current_file: &source,
+                tracker: &tracker
+            };
+            ctx.report_error(&parse_error).eprint(source)?;
+            std::process::exit(1);
+        }
+    };
     eprintln!("Pretty printed ast:");
     match options.output_format.unwrap_or_else(Default::default) {
         OutputFormat::Json => {
@@ -164,6 +200,11 @@ struct TokenizeOptions {
     /// Output raw spans, without tracking any line information
     #[clap(long)]
     raw_spans: bool,
+    /// Use fancy errors
+    ///
+    /// Requires that raw-spans is false
+    #[clap(long = "fancy")]
+    fancy_errors: bool,
     #[clap(flatten)]
     input: InputOptions
 }

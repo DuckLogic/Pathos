@@ -7,8 +7,11 @@ use std::num::{NonZeroU64};
 use fixedbitset::FixedBitSet;
 
 use crate::alloc::AllocError;
-use crate::ast::Span;
+use crate::ast::{Span, Position};
 use crate::lexer::StringError;
+
+#[cfg(feature = "fancy-errors")]
+pub mod fancy;
 
 #[derive(Copy, Clone, Eq, PartialOrd, PartialEq, Ord)]
 pub struct LineNumber(NonZeroU64);
@@ -97,12 +100,12 @@ impl LineCache {
         assert!(self.end >= self.start);
         self.end = self.end.checked_add(amount).expect("u64 overflow");
     }
-    fn count_chars(&self) -> usize {
+    fn count_chars(&self, byte_offset: usize) -> usize {
+        assert!(byte_offset as u64 <= self.num_bytes());
         match self.character_boundaries {
-            Some(ref boundaries) => boundaries.count_ones(0..self.num_bytes() as usize),
+            Some(ref boundaries) => boundaries.count_ones(0..byte_offset),
             None => self.num_bytes() as usize // ascii only
         }
-
     }
     /// Resolve a byte offset, assuming it is present in this line
     fn resolve_index(&self, line_number: LineNumber, byte_index: u64) -> DetailedLocation {
@@ -166,9 +169,13 @@ impl LineTracker {
         self.lines.clear();
         self.lines.push(LineCache::first_line());
     }
+    pub fn char_index(&self, location: DetailedLocation) -> u64 {
+        let line = &self.lines[location.line_number.get() as usize - 1];
+        line.count_chars(location.column as usize) as u64
+    }
     /// Resolve a byte-based index into a detailed location
-    pub fn resolve_location(&self, byte_index: u64) -> DetailedLocation {
-        let line_index = match self.lines.binary_search_by_key(&byte_index, |line| line.start) {
+    pub fn resolve_position(&self, pos: Position) -> DetailedLocation {
+        let line_index = match self.lines.binary_search_by_key(&pos.0, |line| line.start) {
             Ok(index) => {
                 // The index is *exactly* the start of a line
                 index
@@ -189,17 +196,17 @@ impl LineTracker {
         let line = &self.lines[line_index];
         let line_number = LineNumber::from_index(line_index);
         // Need to handle last byte specially (because line.end is exclusive)
-        if byte_index == self.total_bytes() {
+        if pos.0 == self.total_bytes() {
             return DetailedLocation {
-                line_number, column: line.count_chars() as u64
+                line_number, column: line.count_chars(line.num_bytes() as usize) as u64
             };
         }
-        line.resolve_index(line_number, byte_index)
+        line.resolve_index(line_number, pos.0)
     }
     pub fn resolve_span(&self, span: Span) -> DetailedSpan {
         DetailedSpan {
-            start: self.resolve_location(span.start),
-            end: self.resolve_location(span.end)
+            start: self.resolve_position(span.start),
+            end: self.resolve_position(span.end)
         }
     }
     /// Mark an index as the start of a newline
@@ -286,7 +293,7 @@ impl Display for DetailedSpan {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum ParseErrorKind {
     InvalidToken,
     InvalidExpression,
@@ -306,9 +313,8 @@ pub enum MaybeSpan {
 struct ParseErrorInner {
     /// The span of the source location
     ///
-    /// There are only two instances where this can be `None`:
+    /// There is only one instance where this can be `None`:
     /// 1. Out of memory errors
-    /// 2. A ParseVisitError
     span: MaybeSpan,
     expected: Option<String>,
     actual: Option<String>,
@@ -490,7 +496,7 @@ mod test {
             end: 18,
             character_boundaries: None
         });
-        assert_eq!(tracker.resolve_location(4), DetailedLocation {
+        assert_eq!(tracker.resolve_position(Position(4)), DetailedLocation {
             line_number: LineNumber::ONE,
             column: 4
         });
@@ -500,7 +506,7 @@ mod test {
         let difference_between_chars_and_bytes = Cell::new(0);
         let verify_char_position = |char_index: u64| {
             assert_eq!(
-                tracker.resolve_location(char_index + difference_between_chars_and_bytes.get()),
+                tracker.resolve_position(Position(char_index + difference_between_chars_and_bytes.get())),
                 DetailedLocation {
                     line_number: LineNumber::ONE,
                     column: char_index
@@ -532,12 +538,12 @@ mod test {
         for (line_index, line) in text.split('\n').enumerate() {
             let line_number = LineNumber::from_index(line_index);
             for (char_offset, (offset, _)) in line.char_indices().enumerate() {
-                assert_eq!(tracker.resolve_location((last_line + offset) as u64), DetailedLocation {
+                assert_eq!(tracker.resolve_position((last_line + offset).into()), DetailedLocation {
                     column: char_offset as u64,
                     line_number
                 }, "Mismatched locations for {} at {} in line #{}", char_offset, offset, line_number);
             }
-            assert_eq!(tracker.resolve_location(last_line as u64 + line.len() as u64), DetailedLocation {
+            assert_eq!(tracker.resolve_position(Position(last_line as u64 + line.len() as u64)), DetailedLocation {
                 line_number, column: line.chars().count() as u64
             });
             last_line += line.len() + 1;

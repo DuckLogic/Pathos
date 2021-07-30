@@ -104,12 +104,14 @@ macro_rules! tk {
 
 use logos::{Logos, Lexer};
 
-use crate::ast::Span;
+use crate::ast::{Span};
 use crate::ast::constants::{BigInt, QuoteStyle, StringPrefix, StringStyle};
 use crate::ast::ident::{SymbolTable, Symbol};
 use crate::ast::tree::Operator;
 
 pub use crate::parse::errors::LineTracker;
+use std::backtrace::Backtrace;
+use std::error::Error;
 
 /// A python identifier
 ///
@@ -182,15 +184,25 @@ impl Default for RawLexerState {
         }
     }
 }
-
 #[derive(Debug, PartialEq, Error)]
 pub enum LexError {
     #[error("Invalid token")]
-    InvalidToken,
+    InvalidToken {
+        span: Span,
+    },
     #[error("Allocation failed")]
     AllocFailed,
     #[error("Invalid string: {0}")]
     InvalidString(#[source] StringError)
+}
+impl LexError {
+    pub fn span(&self) -> Option<Span> {
+        match *self {
+            LexError::InvalidToken { span, .. } => Some(span),
+            LexError::AllocFailed => None,
+            LexError::InvalidString(ref cause) => cause.span,
+        }
+    }
 }
 impl From<AllocError> for LexError {
     #[inline]
@@ -202,9 +214,9 @@ impl From<AllocError> for LexError {
 impl From<StringError> for LexError {
     #[cold]
     fn from(cause: StringError) -> LexError {
-        match cause {
-            StringError::AllocFailed => LexError::AllocFailed,
-            cause => LexError::InvalidString(cause)
+        match cause.kind {
+            StringErrorKind::AllocFailed => LexError::AllocFailed,
+            _ => LexError::InvalidString(cause)
         }
     }
 }
@@ -216,8 +228,7 @@ pub struct PythonLexer<'src, 'arena> {
     pending_indentation_change: isize,
     indent_stack: Vec<usize>,
     starting_line: bool,
-    pub line_start_position: u64,
-    pub line_tracker: Option<LineTracker>
+    relative_buffer_position: u64,
 }
 impl<'src, 'arena> Debug for PythonLexer<'src, 'arena> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -243,6 +254,15 @@ macro_rules! translate_tokens {
     (handler for $name:ident) => (Token::$name);
 }
 impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
+    /*
+     * TODO: Encapsulate and support buffered input
+     *
+     * Unfortunately, input to logos currently can't be buffered with Read.
+     * See issue #159 for details
+     */
+    pub fn original_text(&self) -> &'src str {
+        self.raw_lexer.source()
+    }
     pub fn new(arena: &'arena Allocator, symbol_table: SymbolTable<'arena>, text: &'src str) -> Self {
         PythonLexer {
             arena,
@@ -251,8 +271,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             pending_indentation_change: 0,
             indent_stack: vec![0],
             starting_line: true,
-            line_start_position: 0,
-            line_tracker: None
+            relative_buffer_position: 0,
         }
     }
     pub fn reset(&mut self, text: &'src str) {
@@ -260,10 +279,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         self.pending_indentation_change = 0;
         self.indent_stack.clear();
         self.indent_stack.push(0);
-        self.line_start_position = 0;
-        if let Some(ref mut tracker) = self.line_tracker {
-            tracker.reset();
-        }
+        self.relative_buffer_position = 0;
         self.starting_line = true;
     }
     pub fn lex_all(&mut self, text: &'src str) -> Result<Vec<Token<'arena>>, LexError> {
@@ -277,25 +293,10 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     #[inline]
     pub fn current_span(&self) -> Span {
         let raw = self.raw_lexer.span();
-        let offset = self.line_start_position;
+        let offset = self.relative_buffer_position;
         Span {
-            start: offset.saturating_add(raw.start as u64),
-            end: offset.saturating_add(raw.end as u64)
-        }
-    }
-    /// Mark the current token as a newline
-    fn mark_as_newline(&mut self) {
-        #[cfg(debug_assertions)] {
-            let src_text = self.raw_lexer.slice();
-            debug_assert!(
-                &["\n", "\r\n", "\r"].contains(&src_text),
-                "Invalid line start: {:?}",
-                src_text
-            );
-        }
-        let next_line_start = self.current_span().end;
-        if let Some(ref mut tracker) = self.line_tracker {
-            tracker.mark_line_start(next_line_start);
+            start: offset.saturating_add(raw.start as u64).into(),
+            end: offset.saturating_add(raw.end as u64).into()
         }
     }
     pub fn create_ident(&mut self, text: &'src str) -> Result<Symbol<'arena>, AllocError> {
@@ -303,13 +304,6 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
     }
     #[allow(unused)]
     pub fn try_next(&mut self) -> Result<Option<Token<'arena>>, LexError> {
-        let res = self._try_advance();
-        if let Some(ref mut tracker) = self.line_tracker {
-            tracker.extend_character_boundaries(self.raw_lexer.slice());
-        }
-        res
-    }
-    fn _try_advance(&mut self) -> Result<Option<Token<'arena>>, LexError> {
         match self.pending_indentation_change.cmp(&0) {
             Ordering::Equal => {},
             Ordering::Less => {
@@ -374,11 +368,9 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             };
             return Ok(Some(translate_tokens!(token;
                 EscapedNewline => {
-                    self.mark_as_newline();
                     continue 'yum;
                 },
                 RawNewline => {
-                    self.mark_as_newline();
                     self.starting_line = true;
                     // TODO: Do we need to do anything else?
                     Token::Newline
@@ -394,7 +386,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                 },
                 FloatLiteral (f) => Token::FloatLiteral(f),
                 Error => {
-                    return Err(LexError::InvalidToken)
+                    return Err(LexError::InvalidToken { span: self.current_span() })
                 },
                 StartString(style) => {
                     Token::StringLiteral(self.lex_string(style)?)
@@ -425,6 +417,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
         // Estimate the size of the string
         let originally_remaining = self.raw_lexer.remainder();
         let original_bytes = originally_remaining.as_bytes();
+        let string_start = self.current_span().start;
         let estimated_size = if style.quote_style.is_triple_string() {
             ::memchr::memmem::find_iter(
                 original_bytes,
@@ -435,7 +428,16 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                 style.quote_style.start_byte(),
                 original_bytes
             ).find(|&index| index == 0 || original_bytes.get(index - 1) != Some(&b'\\'))
-        }.ok_or(StringError::MissingEnd)?;
+        }.ok_or_else(|| {
+            let span = string_start.with_len(style.quote_style.len());
+            StringError {
+                kind: StringErrorKind::MissingEnd,
+                span: Some(span), backtrace: Backtrace::capture(),
+                entire_string_span: None
+            }
+        })?;
+        // TODO: Is the 'estimated_size' ever incorrect?
+        let entire_string_span = string_start.with_len(estimated_size);
         let mut buffer = crate::alloc::String::with_capacity(
             self.arena,
             estimated_size
@@ -444,7 +446,14 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
             self.raw_lexer.remainder()
         );
         while let Some(tk) = sub_lexer.next() {
-            let relative_index = sub_lexer.span().start;
+            let relative_span = Span::from_logos_span(sub_lexer.span());
+            let span = relative_span.offset(entire_string_span.start.0);
+            let give_error = |span: Span, kind: StringErrorKind| {
+                StringError {
+                    kind, backtrace: Backtrace::capture(),
+                    span: Some(span), entire_string_span: Some(entire_string_span)
+                }
+            };
             match tk.interpret() {
                 InterpretedStringPart::RegularText(text) => {
                     buffer.push_str(text)?;
@@ -469,8 +478,8 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                     if style.quote_style.is_triple_string() {
                         buffer.push('\n')?;
                     } else {
-                        self.raw_lexer.bump(relative_index);
-                        return Err(StringError::ForbiddenNewline);
+                        self.raw_lexer.bump(relative_span.start.0 as usize);
+                        return Err(give_error(span.start.with_len(1), StringErrorKind::ForbiddenNewline));
                     }
                 },
                 InterpretedStringPart::NamedEscape(name) => {
@@ -478,25 +487,23 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                         buffer.push_str(sub_lexer.slice())?;
                         continue;
                     }
-                    #[cfg(feature = "unicode-named-escapes")]
-                    {
+                    if cfg!(feature = "unicode-named-escapes") {
                         let upper = name.to_uppercase();
-                        buffer.push(match crate::unicode_names::NAMES.binary_search_by_key(&upper.as_str(), |&(name, _)| name) {
-                            Ok(index) => crate::unicode_names::NAMES[index].1,
-                            Err(_) => {
-                                self.raw_lexer.bump(relative_index);
-                                return Err(StringError::InvalidNamedEscape {
-                                    index: relative_index
-                                })
-                            }
-                        })?;
-                    }
-                    #[cfg(not(feature = "unicode-named-escapes"))]
-                    {
-                        self.raw_lexer.bump(relative_index);
-                        return Err(StringError::UnsupportedNamedEscape {
-                            index: relative_index
-                        });
+                        let res: Option<char>;
+                        #[cfg(feature = "unicode-named-escapes")] {
+                            res = crate::unicode_names::NAMES.binary_search_by_key(&upper.as_str(), |&(name, _)| name)
+                                .ok().map(|index| crate::unicode_names::NAMES[index].1)
+                        }
+                        #[cfg(not(feature = "unicode-named-escapes"))] {
+                            res = unreachable!();
+                        }
+                        buffer.push(res.ok_or_else(|| {
+                            self.raw_lexer.bump(relative_span.start.0 as usize);
+                            give_error(span, StringErrorKind::InvalidNamedEscape)
+                        })?)?;
+                    } else {
+                        self.raw_lexer.bump(relative_span.start.index());
+                        return Err(give_error(span, StringErrorKind::UnsupportedNamedEscape))
                     }
                 },
                 InterpretedStringPart::UnescapedQuote(quote) => {
@@ -515,7 +522,7 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                         (QuoteStyle::SingleLong, QuoteStyle::SingleLong) |
                         (QuoteStyle::DoubleLong, QuoteStyle::DoubleLong) => {
                             // We've encountered our closing
-                            self.raw_lexer.bump(relative_index + quote.len());
+                            self.raw_lexer.bump(relative_span.start.index() + quote.len());
                             return Ok(&*self.arena.alloc(StringLiteral {
                                 style, value: buffer.into_str()
                             })?)
@@ -537,20 +544,23 @@ impl<'src, 'arena, 'sym> PythonLexer<'src, 'arena> {
                     }
                 },
                 InterpretedStringPart::Error => {
-                    self.raw_lexer.bump(relative_index);
+                    self.raw_lexer.bump(relative_span.start.index());
                     let mut chrs = sub_lexer.slice().chars();
                     if let Some('\\') = chrs.next() {
                         if let Some(next) = chrs.next() {
-                            return Err(StringError::InvalidEscape {
-                                c: next
-                            })
+                            return Err(give_error(span, StringErrorKind::InvalidEscape { c: next }))
                         }
                     }
-                    return Err(StringError::MissingEnd)
+                    return Err(give_error(span, StringErrorKind::MissingEnd))
                 }
             }
         }
-        Err(StringError::MissingEnd)
+        Err(StringError {
+            entire_string_span: None,
+            span: Some(entire_string_span),
+            kind: StringErrorKind::MissingEnd,
+            backtrace: Backtrace::capture()
+        })
     }
     #[inline]
     pub fn into_symbol_table(self) -> SymbolTable<'arena> {
@@ -1294,7 +1304,7 @@ enum StringPart<'src> {
     Error
 }
 impl<'src> StringPart<'src> {
-    /// Collapse this into a more managable form
+    /// Collapse this token into a more manageable form
     #[inline]
     fn interpret(self) -> InterpretedStringPart<'src> {
         InterpretedStringPart::EscapedLiteral(match self {
@@ -1358,37 +1368,65 @@ fn parse_hex_escape<'a>(lex: &mut Lexer<'a, StringPart<'a>>) -> u8 {
     debug_assert!(lex.slice().starts_with('\\'));
     u8::from_str_radix(&lex.slice()[1..], 16).unwrap()
 }
+#[derive(Debug)]
+pub struct StringError {
+    /// The span of the entire string, if that differs from the primary span of this error
+    ///
+    /// This may be `None` even if the primary of the span is `Some`
+    pub entire_string_span: Option<Span>,
+    /// The span of the error, or `None` if this is an allocation-failed error
+    pub span: Option<Span>,
+    pub kind: StringErrorKind,
+    backtrace: Backtrace,
+}
+impl Error for StringError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.kind.source()
+    }
+
+    fn backtrace(&self) -> Option<&Backtrace> {
+        Some(&self.backtrace)
+    }
+
+}
+impl PartialEq for StringError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+impl Display for StringError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.kind, f)
+    }
+}
 #[derive(Debug, Clone, PartialEq, Error)]
-pub enum StringError {
+pub enum StringErrorKind {
     #[error("Missing end of quote")]
     MissingEnd,
-    #[error("Forbidden newline inside string")]
+    #[error("Newlines are forbidden inside strings")]
     ForbiddenNewline,
-    #[error("Invalid escape in string {c:?}")]
+    #[error("Invalid escape char: {c:?}")]
     InvalidEscape {
         c: char,
     },
-    #[error("Invalid named escape (offset {index})")]
-    InvalidNamedEscape {
-        /// The index of the named escape that is invalid,
-        /// relative to the start of the string
-        index: usize
-    },
-    #[error("Named escapes are unsupported")]
+    #[error("Invalid named escape")]
+    InvalidNamedEscape,
     /// Indicates that named escapes are unsupported,
     /// because the crate was compiled without full unicode support.
-    UnsupportedNamedEscape {
-        /// The index of the unsupported escape
-        index: usize
-    },
+    #[error("Named escapes are unsupported")]
+    UnsupportedNamedEscape,
     #[error("Allocation failed")]
     AllocFailed
 }
 impl From<AllocError> for StringError {
-    #[inline]
     #[cold]
     fn from(_cause: AllocError) -> StringError {
-        StringError::AllocFailed
+        StringError {
+            kind: StringErrorKind::AllocFailed,
+            backtrace: Backtrace::capture(),
+            span: None,
+            entire_string_span: None
+        }
     }
 }
 

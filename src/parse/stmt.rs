@@ -2,7 +2,7 @@ use crate::parse::{PythonParser, ArgumentParseOptions};
 use crate::ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
 use crate::lexer::Token;
 use crate::ParseError;
-use crate::ast::{Spanned, Span, AstNode};
+use crate::ast::{Spanned, Span, AstNode, Position};
 use crate::parse::parser::{ParseSeperated, Parser, IParser, EndFunc, ParseSeperatedConfig};
 /*
  * Override the global `std::alloc::Vec` with our `crate::alloc::Vec`.
@@ -316,7 +316,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             allow_type_annotations: true
         })?;
         self.parser.expect(Token::CloseParen)?;
-        let return_type = if let Some(Token::Colon) = self.parser.peek() {
+        let return_type = if let Some(Token::Arrow) = self.parser.peek() {
             self.parser.skip();
             Some(self.expression()?)
         } else {
@@ -327,7 +327,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         self.parser.next_line()?;
         self.parser.expect(Token::IncreaseIndent)?;
         let mut body = Vec::new(self.arena);
-        let mut end: u64;
+        let mut end: Position;
         loop {
             let stmt = self.statement()?;
             body.push(stmt)?;
@@ -347,7 +347,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         let span = Span { start, end };
         let body = &*body.into_slice();
         self.stmt(if is_async {
-            StmtKind::FunctionDef {
+            StmtKind::AsyncFunctionDef {
                 span, name,
                 args: arg_declarations,
                 body,
@@ -356,7 +356,7 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 type_comment: None
             }
         } else {
-            StmtKind::AsyncFunctionDef {
+            StmtKind::FunctionDef {
                 span, name,
                 args: arg_declarations,
                 body,

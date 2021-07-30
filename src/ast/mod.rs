@@ -1,4 +1,10 @@
 use std::fmt::{self, Formatter, Debug, Display};
+use std::str::FromStr;
+use std::hash::Hash;
+use std::convert::{TryInto, TryFrom};
+
+#[cfg(feature = "serialize")]
+use serde::{Serialize, Deserialize};
 #[cfg(feature = "serialize")]
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 
@@ -13,23 +19,96 @@ pub use crate::alloc::Allocator;
 pub use self::ident::{Ident, Symbol};
 use crate::ast::tree::{ExprKind, Expr};
 use crate::alloc::AllocError;
-use std::str::FromStr;
-use std::hash::Hash;
+use std::ops::Range;
 
+/// Represents a single position in the source code.
+///
+/// Currently implemented as a byte-index
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+pub struct Position(pub u64);
+
+impl Position {
+    #[track_caller]
+    pub fn index(&self) -> usize {
+        match usize::try_from(self.0) {
+            Ok(val) => val,
+            Err(_) => panic!("Position overflowed usize: {}", self.0)
+        }
+    }
+}
+
+impl Position {
+    /// Create a dummy position for use with debugging
+    #[inline]
+    pub const fn dummy() -> Position {
+        Position(u64::MAX)
+    }
+    #[inline]
+    pub fn is_dummy(&self) -> bool {
+        self.0 == u64::MAX
+    }
+    #[inline]
+    pub fn with_len<L: TryInto<u64>>(self, len: L) -> Span
+        where L::Error: Debug {
+        let len = len.try_into().unwrap();
+        Span {
+            start: self,
+            end: Position(self.0 + len)
+        }
+    }
+}
+impl From<u64> for Position {
+    #[inline]
+    fn from(i: u64) -> Self {
+        Position(i)
+    }
+}
+impl From<usize> for Position {
+    #[inline]
+    fn from(i: usize) -> Self {
+        Position(i as u64)
+    }
+}
+impl Display for Position {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.is_dummy() {
+            f.write_str("DUMMY")
+        } else {
+            Display::fmt(&self.0, f)
+        }
+    }
+}
+impl Debug for Position {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
 #[derive(Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serialize", derive(SerializeDisplay, DeserializeFromStr))]
 pub struct Span {
-    pub start: u64,
-    pub end: u64
+    pub start: Position,
+    pub end: Position
 }
 impl Span {
+    #[inline]
+    pub fn from_logos_span(span: Range<usize>) -> Span {
+        Span {
+            start: span.start.into(),
+            end: span.end.into()
+        }
+    }
     /// Create a dummy span for debugging purposes
     ///
     /// **WARNING**: The resulting span is not distinguishable
     /// from normally created spans
     #[inline]
     pub const fn dummy() -> Span {
-        Span { start: 0, end: 0 }
+        Span { start: Position::dummy(), end: Position::dummy() }
+    }
+    #[inline]
+    pub fn is_dummy(&self) -> bool {
+        self.start.is_dummy() && self.end.is_dummy()
     }
     /// Expand to include the other span
     #[inline]
@@ -37,6 +116,14 @@ impl Span {
         Span {
             start: self.start.min(other.start),
             end: self.end.max(other.end)
+        }
+    }
+    /// Offset this span by the specified amount
+    #[inline]
+    pub fn offset(&self, amount: u64) -> Span {
+        Span {
+            start: Position(self.start.0 + amount),
+            end: Position(self.end.0 + amount)
         }
     }
 }
@@ -47,7 +134,11 @@ impl Debug for Span {
 }
 impl Display for Span {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
+        if self.is_dummy() {
+            f.write_str("DUMMY")
+        } else {
+            write!(f, "{}..{}", self.start, self.end)
+        }
     }
 }
 #[derive(Error, Debug)]
@@ -62,8 +153,8 @@ pub enum SpanParseError {
     },
     #[error("The end {end} must be <= start {start} ")]
     EndBeforeStart {
-        end: u64,
-        start: u64
+        end: Position,
+        start: Position
     }
 }
 impl FromStr for Span {
@@ -85,8 +176,8 @@ impl FromStr for Span {
             },
             None => return Err(SpanParseError::MissingDots)
         };
-        let start = u64::from_str(&s[..dot_start_index])?;
-        let end = u64::from_str(&s[dot_end_index..])?;
+        let start = u64::from_str(&s[..dot_start_index])?.into();
+        let end = u64::from_str(&s[dot_end_index..])?.into();
         if start <= end {
             Ok(Span { start, end })
         } else {

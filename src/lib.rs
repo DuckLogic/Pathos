@@ -13,7 +13,7 @@ use parse::{PythonParser, parser::{Parser}};
 pub mod alloc;
 pub mod lexer;
 pub mod ast;
-mod parse;
+pub mod parse;
 #[cfg(feature = "unicode-named-escapes")]
 #[allow(clippy::all)]
 mod unicode_names;
@@ -44,7 +44,7 @@ pub fn parse_text<'a, 'src>(
     );
     let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool);
     let res= parser.parse_top_level(mode).map_err(|err| {
-        err.with_line_numbers(parser.parser.line_number_tracker())
+        err.with_line_numbers(&parser.parser.line_tracker)
     })?;
     parser.parser.expect_end_of_input()?;
     // give back the symbol table we took
