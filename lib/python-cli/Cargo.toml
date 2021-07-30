@@ -1,0 +1,18 @@
+[package]
+name = "pathos-python-cli"
+description = "Command line interface to Pathos' Python parser. Intended as an aid for development"
+version = "0.1.0"
+publish = false
+edition = "2018"
+
+[[bin]]
+name = "pathos"
+path = "src/main.rs"
+
+[dependencies]
+# CLI Parsing
+clap = "3.0.0-beta.2"
+tempfile = "3"
+anyhow = "1"
+pathos-python-parser = { path = "../python-parser" }
+pathos-python-ast = { path = "../python-ast", features = ["serialize", "json"] }

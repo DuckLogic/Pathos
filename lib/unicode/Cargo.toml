@@ -1,0 +1,17 @@
+[package]
+name = "pathos-unicode"
+version = "0.1.0"
+edition = "2018"
+description = "Full unicode support for Pathos"
+
+[dependencies]
+thiserror = "1"
+
+[features]
+# Include a table mapping character names to values
+character-name-table = []
+# Support resolving characters by name
+#
+# Currently, this uses a table as the implementation,
+# although this may change in the future to a FST
+character-names = ["character-name-table"]

@@ -1,0 +1,39 @@
+[package]
+name = "pathos-python-parser"
+version = "0.1.0"
+description = "Pathos' Python parser. The primary point of the crate"
+edition = "2018"
+
+[features]
+# Enable num-bigint by default since it's more liberally licensed than GMP
+default = ["num-bigint", "full-unicode"]
+# Enable full unicode support.
+#
+# This is only needed to support named escapes
+# in strings, which requires large generated tables.
+full-unicode = ["unicode-named-escapes"]
+# Support named escapes in string literals (\N{Example})
+# This requires large tables to be included in
+# the library.
+unicode-named-escapes = []
+gmp = ["rug", "pathos-python-ast/rug"]
+num = ["pathos-python-ast/num-bigint", "num-bigint"]
+
+[dependencies]
+logos = "0.12"
+# Rug backend for BigInteger arithmetic
+rug = { version = "1.12", optional = true }
+num-bigint = { version = "0.4.0", optional = true }
+pathos-unicode = { path = "../unicode", default-features = false }
+pathos = { path = "../.." }
+
+[dependencies.pathos-python-ast]
+path = "../python-ast"
+version = "0.1.0"
+default-features = false
+
+[dependencies.lexical-core]
+version = "0.7.6"
+# Used for parsing floats
+features = ["correct",  "format"]
+default-features = false

@@ -1,0 +1,37 @@
+[package]
+name = "pathos-python-ast"
+description = "Pathos' AST for Python"
+version = "0.1.0"
+edition = "2018"
+
+[features]
+# By default, we use num-bigint because it's more
+# liberally licensed than GMP
+default = ["num"]
+# Support serde serialization of the AST
+# TODO: Rename when we get support for `dep:serde` syntax
+serialize = ["serde", "serde_derive", "serde_with", "rug/serde", "num-bigint/serde", "pathos/serialize"]
+# Support json serialization (using serde)
+json = ["serialize", "serde_json"]
+
+# Use num-bigint for large integers
+# TODO: Rename when we get support for `dep:num-bigint` syntax
+num = ["num-bigint"]
+# Use rug for large integers
+gmp = ["rug"]
+
+[dependencies]
+pathos = { path = "../.." }
+hashbrown = "0.11"
+thiserror = "1"
+# Better derive
+educe = "0.4"
+# Rug backend for BigInteger arithmetic
+rug = { version = "1.12", optional = true }
+num-bigint = { version = "0.4.0", optional = true }
+# Serde support
+serde = { version = "1", optional = true }
+serde_derive = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+serde_with = { version = "1.9", optional = true }
+ordered-float = "2.7"

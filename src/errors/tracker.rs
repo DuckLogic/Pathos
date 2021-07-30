@@ -1,17 +1,9 @@
-use std::backtrace::Backtrace;
-use std::error::Error;
-use std::fmt::{self, Display, Formatter, Debug};
-use std::ops::{Range};
-use std::num::{NonZeroU64};
+use std::num::NonZeroU64;
+use std::fmt::{self, Formatter, Display, Debug};
 
 use fixedbitset::FixedBitSet;
-
-use crate::alloc::AllocError;
-use crate::ast::{Span, Position};
-use crate::lexer::StringError;
-
-#[cfg(feature = "fancy-errors")]
-pub mod fancy;
+use std::ops::Range;
+use crate::ast::{Position, Span};
 
 #[derive(Copy, Clone, Eq, PartialOrd, PartialEq, Ord)]
 pub struct LineNumber(NonZeroU64);
@@ -95,12 +87,12 @@ impl LineCache {
     }
     /// The length of the line
     #[inline]
-    fn num_bytes(&self) -> u64 {
-        self.end - self.start
+    fn byte_len(&self) -> usize {
+        (self.end - self.start) as usize
     }
     #[inline]
     fn char_len(&self) -> u64 {
-        self.count_chars(self.num_bytes() as usize) as u64
+        self.count_chars(self.byte_len()) as u64
     }
     /// Extend this line's length by the specified amount
     fn extend_len(&mut self, amount: u64) {
@@ -108,10 +100,10 @@ impl LineCache {
         self.end = self.end.checked_add(amount).expect("u64 overflow");
     }
     fn count_chars(&self, byte_offset: usize) -> usize {
-        assert!(byte_offset as u64 <= self.num_bytes());
+        assert!(byte_offset <= self.byte_len());
         match self.character_boundaries {
             Some(ref boundaries) => boundaries.count_ones(0..byte_offset),
-            None => self.num_bytes() as usize // ascii only
+            None => self.byte_len() as usize // ascii only
         }
     }
     /// Resolve a byte offset, assuming it is present in this line
@@ -124,7 +116,7 @@ impl LineCache {
         let byte_offset = byte_index - self.start;
         let char_offset = match self.character_boundaries {
             Some(ref boundaries) => {
-                assert_eq!(boundaries.len() as u64, self.num_bytes() + 1, "Unexpected boundaries length for line #{}: {:?}", line_number, self);
+                assert_eq!(boundaries.len(), self.byte_len() + 1, "Unexpected boundaries length for line #{}: {:?}", line_number, self);
                 assert!(boundaries[0], "Start of line should always be a character boundary");
                 assert!(
                     boundaries[byte_offset as usize],
@@ -170,7 +162,7 @@ impl LineTracker {
     }
     pub fn total_chars(&self) -> u64 {
         let last = self.lines.last().unwrap();
-        last.char_offset + last.count_chars(last.num_bytes() as usize) as u64
+        last.char_offset + last.count_chars(last.byte_len() as usize) as u64
     }
     #[inline]
     pub fn num_lines(&self) -> usize {
@@ -209,7 +201,7 @@ impl LineTracker {
         // Need to handle last byte specially (because line.end is exclusive)
         if pos.0 == self.total_bytes() {
             return DetailedLocation {
-                line_number, column: line.count_chars(line.num_bytes() as usize) as u64
+                line_number, column: line.count_chars(line.byte_len() as usize) as u64
             };
         }
         line.resolve_index(line_number, pos.0)
@@ -239,7 +231,7 @@ impl LineTracker {
         );
         if line_start == last_line.end + 1 {
             last_line.end = line_start;
-            let new_len = last_line.num_bytes() as usize;
+            let new_len = last_line.byte_len() as usize;
             if let Some(ref mut boundaries) = last_line.character_boundaries {
                 boundaries.grow(new_len + 1);
                 boundaries.set(new_len - 1, true);
@@ -270,9 +262,9 @@ impl LineTracker {
     /// This implicitly extends the end of the line.
     pub fn extend_character_boundaries(&mut self, text: &str) {
         let last_line = self.lines.last_mut().unwrap();
-        let old_len = last_line.num_bytes() as usize;
+        let old_len = last_line.byte_len() as usize;
         last_line.extend_len(text.len() as u64);
-        let new_len = last_line.num_bytes() as usize;
+        let new_len = last_line.byte_len() as usize;
         if let Some(ref mut set) = last_line.character_boundaries {
             set.grow(new_len + 1);
         }
@@ -304,276 +296,5 @@ impl Display for DetailedSpan {
         } else {
             write!(f, "{}..{}", self.start, self.end)
         }
-    }
-}
-#[derive(Debug)]
-pub enum ParseErrorKind {
-    InvalidToken,
-    InvalidExpression,
-    AllocationFailed,
-    UnexpectedEof,
-    UnexpectedEol,
-    UnexpectedToken,
-    InvalidString(StringError),
-}
-#[derive(Copy, Clone, Debug)]
-pub enum MaybeSpan {
-    Missing,
-    Detailed(DetailedSpan),
-    Regular(Span)
-}
-#[derive(Debug)]
-struct ParseErrorInner {
-    /// The span of the source location
-    ///
-    /// There is only one instance where this can be `None`:
-    /// 1. Out of memory errors
-    span: MaybeSpan,
-    expected: Option<String>,
-    actual: Option<String>,
-    kind: ParseErrorKind,
-    backtrace: Backtrace
-}
-
-pub struct ParseError(Box<ParseErrorInner>);
-impl ParseError {
-    pub fn with_line_numbers(mut self, line_number_tracker: &LineTracker) -> Self {
-        self.0.span = match self.0.span {
-            MaybeSpan::Missing => MaybeSpan::Missing,
-            MaybeSpan::Detailed(already_detailed) => MaybeSpan::Detailed(already_detailed),
-            MaybeSpan::Regular(span) => MaybeSpan::Detailed(line_number_tracker.resolve_span(span))
-        };
-        self
-    }
-    /// Give additional context on the type of item that was "expected"
-    #[cold]
-    pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
-        self.0.expected = Some(msg.to_string());
-        self
-    }
-    pub fn with_actual_msg<T: ToString>(mut self, msg: T) -> Self {
-        self.0.actual = Some(msg.to_string());
-        self
-    }
-    #[inline]
-    pub fn builder(span: Span, kind: ParseErrorKind) -> ParseErrorBuilder {
-        ParseErrorBuilder(ParseErrorInner {
-            span: MaybeSpan::Regular(span), kind,
-            expected: None, actual: None,
-            backtrace: Backtrace::disabled() // NOTE: Actual capture comes later
-        })
-    }
-    /// The span of this error, if any
-    #[inline]
-    pub fn span(&self) -> MaybeSpan {
-        self.0.span
-    }
-}
-impl From<AllocError> for ParseError {
-    #[cold]
-    #[track_caller]
-    fn from(_cause: AllocError) -> Self {
-        /*
-         * TODO: Handle this without allocating.
-         * Its bad to allocate memory for the error value
-         * even though we have an 'out of memory' condition.
-         * Realistically though, we'll probably only encounter
-         * OOM if the counter hits the internal limit.
-         */
-        ParseError(Box::new(ParseErrorInner {
-            span: MaybeSpan::Missing,
-            expected: None,
-            actual: None,
-            kind: ParseErrorKind::AllocationFailed,
-            backtrace: Backtrace::capture()
-        }))
-    }
-}
-impl Debug for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut debug = f.debug_struct("ParseError");
-        match self.0.span {
-            MaybeSpan::Detailed(span) => {
-                debug.field("span", &format_args!("{}", span));
-            },
-            MaybeSpan::Regular(span) => {
-                debug.field("span", &format_args!("{}", span));
-            }
-            MaybeSpan::Missing => {}
-        }
-        debug.field("expected", &self.0.expected)
-            .field("actual", &self.0.actual)
-            .field("kind", &self.0.kind)
-            .field("backtrace", &format_args!("{}", self.0.backtrace))
-            .finish()
-    }
-}
-impl Display for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self.0.kind {
-            ParseErrorKind::InvalidToken => {
-                f.write_str("Invalid token")?;
-            },
-            ParseErrorKind::InvalidExpression => {
-                f.write_str("Invalid expression")?;
-            },
-            ParseErrorKind::AllocationFailed => {
-                f.write_str("Allocation failed")?;
-            }
-            ParseErrorKind::UnexpectedEof => {
-                f.write_str("Unexpected EOF")?;
-            },
-            ParseErrorKind::UnexpectedEol => {
-                f.write_str("Unexpected end of line")?;
-            }
-            ParseErrorKind::UnexpectedToken => {
-                f.write_str("Unexpected token")?;
-            }
-            ParseErrorKind::InvalidString(ref cause) => {
-                write!(f, "Invalid string ({})", cause)?;
-            },
-        }
-        match (&self.0.expected, &self.0.actual) {
-            (Some(ref expected), Some(ref actual)) => {
-                write!(f, ": Expected {}, but got {}", expected, actual)?;
-            },
-            (Some(ref expected), None) => {
-                write!(f, ": Expected {}", expected)?;
-            },
-            (None, Some(ref actual)) => {
-                write!(f, ": Got {}", actual)?;
-            },
-            (None, None) => {}
-        }
-        match self.0.span {
-            MaybeSpan::Regular(span) => {
-                write!(f, " @ {}", span)?;
-            },
-            MaybeSpan::Detailed(span) => {
-                write!(f, " @ {}", span)?;
-            },
-            MaybeSpan::Missing => {}
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for ParseError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self.0.kind {
-            ParseErrorKind::InvalidString(ref cause) => Some(cause),
-            _ => None
-        }
-    }
-
-    #[inline]
-    fn backtrace(&self) -> Option<&Backtrace> {
-        Some(&self.0.backtrace)
-    }
-
-}
-
-pub struct ParseErrorBuilder(ParseErrorInner);
-
-impl ParseErrorBuilder {
-    #[inline]
-    pub fn expected(mut self, f: impl ToString) -> Self {
-        self.0.expected = Some(f.to_string());
-        self
-    }
-    #[inline]
-    pub fn actual(mut self, f: impl ToString) -> Self {
-        self.0.actual = Some(f.to_string());
-        self
-    }
-    #[inline]
-    pub fn build(mut self) -> ParseError {
-        ParseError(Box::new(ParseErrorInner {
-            span: self.0.span,
-            kind: self.0.kind,
-            expected: self.0.expected.take(),
-            actual: self.0.actual.take(),
-            backtrace: Backtrace::capture()
-        }))
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use std::cell::Cell;
-
-    #[test]
-    fn single_line() {
-        // Test ASCII
-        assert_eq!(LineTracker::from_text("").lines[0].num_bytes(), 0);
-        let mut tracker = LineTracker::from_text("All cows eat grass");
-        assert_eq!(tracker.lines[0], LineCache {
-            char_offset: 0,
-            start: 0,
-            end: 18,
-            character_boundaries: None
-        });
-        assert_eq!(tracker.resolve_position(Position(4)), DetailedLocation {
-            line_number: LineNumber::ONE,
-            column: 4
-        });
-        // Test unicode
-        tracker = LineTracker::from_text("Unicode: \u{E2}ll \u{14D}ows eat gr\u{1CE}ss");
-        assert_eq!(tracker.lines[0].start, 0);
-        let difference_between_chars_and_bytes = Cell::new(0);
-        let verify_char_position = |char_index: u64| {
-            assert_eq!(
-                tracker.resolve_position(Position(char_index + difference_between_chars_and_bytes.get())),
-                DetailedLocation {
-                    line_number: LineNumber::ONE,
-                    column: char_index
-                }
-            );
-        };
-        // 3rd char is still ASCII
-        assert_eq!(difference_between_chars_and_bytes.get(), 0);
-        verify_char_position(3);
-        // 9th character is unicode, but it *starts* at byte-index 9 (because everything before it is ASCII)
-        verify_char_position(9);
-        // Character 9 is two bytes, offsetting all future characters by one
-        difference_between_chars_and_bytes.update(|i| i + 1);
-        verify_char_position(10);
-        verify_char_position(11);
-        // Character 13 is also unicode and its two bytes
-        verify_char_position(13);
-        difference_between_chars_and_bytes.update(|i| i + 1);
-        verify_char_position(14);
-        // Character 24 is also unicode and its two bytes
-        verify_char_position(24);
-        difference_between_chars_and_bytes.update(|i| i + 1);
-        verify_char_position(25);
-        verify_char_position(26);
-    }
-    fn verify(text: &str) {
-        let tracker = LineTracker::from_text(text);
-        let mut last_line = 0;
-        for (line_index, line) in text.split('\n').enumerate() {
-            let line_number = LineNumber::from_index(line_index);
-            for (char_offset, (offset, _)) in line.char_indices().enumerate() {
-                assert_eq!(tracker.resolve_position((last_line + offset).into()), DetailedLocation {
-                    column: char_offset as u64,
-                    line_number
-                }, "Mismatched locations for {} at {} in line #{}", char_offset, offset, line_number);
-            }
-            assert_eq!(tracker.resolve_position(Position(last_line as u64 + line.len() as u64)), DetailedLocation {
-                line_number, column: line.chars().count() as u64
-            });
-            last_line += line.len() + 1;
-        }
-    }
-    #[test]
-    fn test_multiline() {
-        verify("\nAll cows eat grass");
-        verify("All cows\n eat grass");
-        verify("All cows\n eat grass\n");
-        verify("Unicode: \u{E2}ll \u{14D}\nows eat gr\u{1CE}ss");
-        verify("Unicode: \u{E2}ll \u{14D}\nows eat gr\u{1CE}ss\n");
-        verify("Unicode: \u{E2}ll\n \u{14D}ows eat gr\u{1CE}ss\n");
     }
 }

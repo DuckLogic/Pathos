@@ -7,8 +7,8 @@ use serde::{Serialize, Serializer};
 
 use hashbrown::HashMap;
 
-use super::{Span, Spanned};
-use crate::alloc::{Allocator, AllocError};
+use pathos::alloc::{Allocator, AllocError};
+use pathos::ast::{Span, Spanned};
 
 pub struct ConstantPool<'a> {
     arena: &'a Allocator,
@@ -551,9 +551,9 @@ pub(crate) trait BigIntInternal: std::fmt::Display + Default {
 }
 
 /// An arbitrary precision integer
-#[cfg(all(feature="num-bigint", not(feature="rug")))]
+#[cfg(all(feature="num", not(feature="gmp")))]
 pub type BigInt = num_bigint::BigInt;
-#[cfg(any(not(feature = "rug"), feature="num-bigint"))]
+#[cfg(any(not(feature = "gmp"), feature="num"))]
 #[derive(Debug)]
 #[derive(thiserror::Error)]
 pub enum FallbackRadixParseError {
@@ -565,7 +565,7 @@ pub enum FallbackRadixParseError {
         radix: u32
     }
 }
-#[cfg(feature="num-bigint")]
+#[cfg(feature="num")]
 impl BigIntInternal for num_bigint::BigInt {
     type ParseRadixError = FallbackRadixParseError;
 
@@ -598,9 +598,9 @@ impl BigIntInternal for num_bigint::BigInt {
     }
 }
 /// A rug BigInt
-#[cfg(feature="rug")]
+#[cfg(feature="gmp")]
 pub type BigInt = rug::Integer;
-#[cfg(feature = "rug")]
+#[cfg(feature = "gmp")]
 impl BigIntInternal for BigInt {
     type ParseRadixError = ::rug::integer::ParseIntegerError;
 
@@ -610,7 +610,7 @@ impl BigIntInternal for BigInt {
         rug::Integer::parse_radix(s, radix as i32).map(rug::Integer::from)
     }
 }
-#[cfg(not(any(feature="num-bigint", feature="rug")))]
+#[cfg(not(any(feature="num", feature="gmp")))]
 impl BigIntInternal for BigInt {
     fn parse_radix(radix: u32, s: &str) -> Result<>{
         assert!((2..=36).contains(&radix));;
@@ -642,13 +642,13 @@ impl BigIntInternal for BigInt {
 /// when all dependencies are disabled
 ///
 /// Stored as plain text
-#[cfg(not(any(feature="num-bigint", feature="rug")))]
+#[cfg(not(any(feature="num", feature="gmp")))]
 #[cfg(feature = "serialize", derive(Serialize))]
 pub struct BigInt {
     text: String,
     radix: u32
 }
-#[cfg(not(any(feature="num-bigint", feature="rug")))]
+#[cfg(not(any(feature="num", feature="gmp")))]
 impl BigInt {
     /// The raw text of this integer
     ///

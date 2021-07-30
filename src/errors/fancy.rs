@@ -1,10 +1,11 @@
+use std::error::Error;
+
 use ariadne::{Report, ReportKind, Label};
 
 use super::ParseError;
 use crate::parse::errors::{ParseErrorKind, MaybeSpan};
 use crate::lexer::{LineTracker, StringError, StringErrorKind, LexError};
 use crate::ast::Span;
-use std::error::Error;
 
 #[derive(Debug, Copy, Clone)]
 pub struct FancySpan {

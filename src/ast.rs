@@ -1,25 +1,18 @@
-use std::fmt::{self, Formatter, Debug, Display};
-use std::str::FromStr;
-use std::hash::Hash;
+use std::ops::Range;
+use std::fmt::{self, Debug, Display, Formatter};
 use std::convert::{TryInto, TryFrom};
+use std::hash::Hash;
+use std::str::FromStr;
 
 #[cfg(feature = "serialize")]
 use serde::{Serialize, Deserialize};
 #[cfg(feature = "serialize")]
-use serde_with::{DeserializeFromStr, SerializeDisplay};
-
+use serde_with::{SerializeDisplay, DeserializeFromStr};
 use thiserror::Error;
 
-pub mod constants;
-pub mod tree;
-pub mod ident;
+pub use crate::ast::ident::{Ident, Symbol};
 
-pub use self::constants::{Constant};
-pub use crate::alloc::Allocator;
-pub use self::ident::{Ident, Symbol};
-use crate::ast::tree::{ExprKind, Expr};
-use crate::alloc::AllocError;
-use std::ops::Range;
+pub mod ident;
 
 /// Represents a single position in the source code.
 ///
@@ -216,18 +209,4 @@ pub trait AstNode: Spanned + Eq + Hash + Debug + Clone + Serializable {
 /// Access the [Span] of an AST item
 pub trait Spanned {
     fn span(&self) -> Span;
-}
-
-/// A [ParseVisitor](crate::parse::visitor::ParseVisitor) that constructs
-/// an abstract syntax tree
-#[derive(Copy, Clone, Debug)]
-pub struct AstBuilder<'a> {
-    pub arena: &'a Allocator,
-}
-impl<'a> AstBuilder<'a> {
-    /// Create an expression of the specified [ExprKind]
-    #[inline]
-    pub fn expr(&self, kind: ExprKind<'a>) -> Result<Expr<'a>, AllocError> {
-        Ok(self.arena.alloc(kind)?)
-    }
 }

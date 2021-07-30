@@ -1,30 +1,10 @@
 use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
-use std::ops::Deref;
 
 use crate::alloc::{Allocator, AllocError};
 use crate::ast::Span;
-use crate::lexer::{LexError, PythonLexer, Token};
-use crate::parse::errors::{ParseError, ParseErrorKind, LineTracker};
-
-#[derive(Copy, Clone, Debug)]
-pub struct SpannedToken<'a> {
-    pub span: Span,
-    pub kind: Token<'a>
-}
-impl<'a> Deref for SpannedToken<'a> {
-    type Target = Token<'a>;
-    #[inline]
-    fn deref(&self) -> &Token<'a> {
-        &self.kind
-    }
-}
-impl<'a> PartialEq<Token<'a>> for SpannedToken<'a> {
-    #[inline]
-    fn eq(&self, other: &Token<'a>) -> bool {
-        self.kind == *other
-    }
-}
+use crate::lexer::{Lexer, Token, SpannedToken, LexerError};
+use crate::errors::{ParseError, ParseErrorKind, tracker::LineTracker, SpannedError};
 
 #[derive(Copy, Clone, Debug)]
 pub enum SeparatorParseState {
@@ -39,20 +19,21 @@ impl Default for SeparatorParseState {
         SeparatorParseState::AwaitingStart
     }
 }
-pub struct EndFunc<'src, 'a, F, D: Display> {
+pub struct EndFunc<'a, F, L: Lexer<'a>, D: Display> {
     func: F,
     description: D,
-    marker: PhantomData<fn(&'src (), &'a ())>
+    marker: PhantomData<fn(&'a (), L)>
 }
-impl<'src, 'a, F: FnMut(&Parser<'src, 'a>) -> bool, D: Display> EndFunc<'src, 'a, F, D> {
+impl<'src, 'a, F: FnMut(&Parser<'a, L>) -> bool, L: Lexer<'a>, D: Display> EndFunc<'a, F, L, D> {
     #[inline]
     pub fn new(description: D, func: F) -> Self {
         EndFunc { func, description, marker: PhantomData }
     }
 }
-impl<'src, 'a, F, D> EndPredicate<'src, 'a> for EndFunc<'src, 'a, F, D> where F: FnMut(&Parser<'src, 'a>) -> bool, D: Display {
+impl<'a, F, D, L: Lexer<'a>> EndPredicate<'a, L::Token, L> for EndFunc<'a, F, L, D>
+    where F: FnMut(&Parser<'a, L>) -> bool, D: Display {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'a, L>) -> bool {
         (self.func)(parser)
     }
     type Desc = D;
@@ -61,14 +42,14 @@ impl<'src, 'a, F, D> EndPredicate<'src, 'a> for EndFunc<'src, 'a, F, D> where F:
         &self.description
     }
 }
-pub trait EndPredicate<'src, 'a> {
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool;
+pub trait EndPredicate<'a, T: Token<'a>, L: Lexer<'a, Token=T>> {
+    fn should_end(&mut self, parser: &Parser<'a, L>) -> bool;
     type Desc: Display;
     fn description(&self) -> &Self::Desc;
 }
-impl<'src, 'a> EndPredicate<'src, 'a> for Token<'a> {
+impl<'a, T: Token<'a>, L: Lexer<'a, Token=T>> EndPredicate<'a, T, L> for T {
     #[inline]
-    fn should_end(&mut self, parser: &Parser<'src, 'a>) -> bool {
+    fn should_end(&mut self, parser: &Parser<'a, L>) -> bool {
         match parser.peek() {
             Some(tk) => tk == *self,
             None => false
@@ -80,18 +61,20 @@ impl<'src, 'a> EndPredicate<'src, 'a> for Token<'a> {
         self
     }
 }
-pub trait IParser<'src, 'a>: Sized + Debug {
-    fn as_mut_parser(&mut self) -> &mut Parser<'src, 'a>;
-    fn as_parser(&self) -> &Parser<'src, 'a>;
+pub trait IParser<'a>: Sized + Debug {
+    type Token: Token<'a>;
+    type Lexer: Lexer<'a, Token=Self::Token>;
+    fn as_mut_parser(&mut self) -> &mut Parser<'a, Self::Lexer>;
+    fn as_parser(&self) -> &Parser<'a, Self::Lexer>;
     #[inline]
     fn parse_seperated<'p, T, F, E>(
         &'p mut self,
-        sep: Token<'a>,
+        sep: Self::Token,
         ending: E,
         parse_func: F,
         config: ParseSeperatedConfig
-    ) -> ParseSeperated<'p, 'src, 'a, Self, F, E, T>
-        where F: FnMut(&mut Self) -> Result<T, ParseError>, E: EndPredicate<'src, 'a> {
+    ) -> ParseSeperated<'p, 'a, Self, F, E, T>
+        where F: FnMut(&mut Self) -> Result<T, ParseError>, E: EndPredicate<'a, Self::Token, Self::Lexer> {
         ParseSeperated::new(
             self, parse_func,
             sep,
@@ -114,28 +97,28 @@ pub struct ParseSeperatedConfig {
 }
 #[derive(Debug)]
 pub struct ParseSeperated<
-    'p, 'src: 'p, 'a: 'p,
-    P: IParser<'src, 'a>,
+    'p, 'a: 'p,
+    P: IParser<'a>,
     ParseFunc, E, T
 > {
     pub parser: &'p mut P,
     pub parse_func: ParseFunc,
-    pub separator: Token<'a>,
+    pub separator: P::Token,
     pub end_func: E,
     pub state: SeparatorParseState,
-    pub marker: PhantomData<fn(&'src ()) -> T>,
-    pub config: ParseSeperatedConfig
+    pub marker: PhantomData<fn() -> T>,
+    pub config: ParseSeperatedConfig,
 }
-impl<'p, 'src, 'a,
-    P: IParser<'src, 'a>,
+impl<'p, 'a,
+    P: IParser<'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndPredicate<'src, 'a>, T
-> ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
+    E: EndPredicate<'a, P::Token, P::Lexer>, T
+> ParseSeperated<'p, 'a, P, ParseFunc, E, T> {
     #[inline]
     pub fn new(
         parser: &'p mut P,
         parse_func: ParseFunc,
-        separator: Token<'a>,
+        separator: P::Token,
         end_func: E,
         config: ParseSeperatedConfig
     ) -> Self {
@@ -175,10 +158,10 @@ impl<'p, 'src, 'a,
 }
 
 impl<'p, 'src, 'a: 'p,
-    P: IParser<'src, 'a>,
+    P: IParser<'a>,
     ParseFunc: FnMut(&mut P) -> Result<T, ParseError>,
-    E: EndPredicate<'src, 'a>, T
-> Iterator for ParseSeperated<'p, 'src, 'a, P, ParseFunc, E, T> {
+    E: EndPredicate<'a, P::Token, P::Lexer>, T
+> Iterator for ParseSeperated<'p, 'a, P, ParseFunc, E, T> {
     type Item = Result<T, ParseError>;
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -211,7 +194,7 @@ impl<'p, 'src, 'a: 'p,
                          */
                         let parser = self.parser.as_mut_parser();
                         let should_eat_more = match parser.peek() {
-                            Some(Token::Newline) => {
+                            Some(tk) if tk.is_newline() => {
                                 // Implicitly consume line and fetch more input
                                 parser.skip();
                                 if parser.is_empty() {
@@ -289,7 +272,7 @@ impl<'p, 'src, 'a: 'p,
 
 #[derive(educe::Educe)]
 #[educe(Debug)]
-pub struct Parser<'src, 'a> {
+pub struct Parser<'a, L: Lexer<'a>> {
     /// The buffer of tokens, always containing at least a single line of tokens.
     ///
     /// The end of the buffer corresponds to one of two things:
@@ -297,7 +280,7 @@ pub struct Parser<'src, 'a> {
     /// 2. The end of the file.
     ///
     /// The buffering deals only in logical lines, not physical lines.
-    buffer: Vec<SpannedToken<'a>>,
+    buffer: Vec<SpannedToken<'a, L::Token>>,
     /// The current position within the buffer
     ///
     /// Once this reaches the buffer's length,
@@ -306,29 +289,28 @@ pub struct Parser<'src, 'a> {
     /// If the lexer has reached the end of the file,
     /// and there is no point asking for more.
     eof: bool,
-    lexer: PythonLexer<'src, 'a>,
+    lexer: L,
+    marker: PhantomData<&'a ()>,
     // TODO: Encapsulate
     pub line_tracker: LineTracker,
 }
 
-impl<'src, 'a> Parser<'src, 'a> {
+impl<'a, L: Lexer<'a>> Parser<'a, L> {
     /// A limited form of look behind, which only works for the current line
-    pub(crate) fn look_behind(&self, amount: usize) -> Option<Token<'a>> {
+    pub fn look_behind(&self, amount: usize) -> Option<L::Token> {
         assert!(amount >= 1);
         self.current_index.checked_sub(amount)
             .and_then(|index| self.buffer.get(index))
             .map(|tk| tk.kind)
     }
-}
-
-impl<'src, 'a> Parser<'src, 'a> {
-    pub fn new(_arena: &'a Allocator, lexer: PythonLexer<'src, 'a>) -> Result<Self, ParseError> {
+    pub fn new(_arena: &'a Allocator, lexer: L) -> Result<Self, ParseError> {
         let line_tracker = LineTracker::from_text(lexer.original_text());
         let mut res = Parser {
             lexer, buffer: Vec::with_capacity(32),
             eof: false,
             current_index: 0,
-            line_tracker
+            line_tracker,
+            marker: PhantomData
         };
         res.next_line()?;
         Ok(res)
@@ -344,17 +326,17 @@ impl<'src, 'a> Parser<'src, 'a> {
         }
     }
     #[inline]
-    pub fn peek_tk(&self) -> Option<SpannedToken<'a>> {
+    pub fn peek_tk(&self) -> Option<SpannedToken<'a, L::Token>> {
         self.buffer.get(self.current_index).cloned()
     }
     #[inline]
-    pub fn peek(&self) -> Option<Token<'a>> {
+    pub fn peek(&self) -> Option<L::Token> {
         self.buffer.get(self.current_index).map(|tk| tk.kind)
     }
     /// Return if the next token is either `Newline` or the EOF
     #[inline]
     pub fn is_newline(&self) -> bool {
-        self.peek() == Some(Token::Newline) || self.is_end_of_file()
+        self.peek().map_or(false, |tk| tk.is_newline()) || self.is_end_of_file()
     }
     /// Look ahead the specified number of tokens
     ///
@@ -364,7 +346,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     /// This doesn't necessarily advance the lexer past newlines,
     /// and may return `None` if the end of line is encountered
     #[inline]
-    pub fn look_ahead(&self, amount: usize) -> Option<Token<'a>> {
+    pub fn look_ahead(&self, amount: usize) -> Option<L::Token> {
         self.buffer.get(self.current_index + amount).map(|tk| tk.kind)
     }
     /// Skips over the next token without returning it
@@ -386,16 +368,15 @@ impl<'src, 'a> Parser<'src, 'a> {
     /// this. This should be fine if you've already done a call to `peek`.
     #[inline]
     #[track_caller]
-    pub fn skip(&mut self) -> SpannedToken<'a> {
+    pub fn skip(&mut self) -> SpannedToken<'a, L::Token> {
         self.pop().expect("EOL/EOF")
     }
     /// Pop a token, advancing the position in the internal buffer.
     ///
     /// Return `None` if already at the end of the line.
     #[inline]
-    #[must_use = "Did you mean skip()? pop() does nothing if empty..."]
-    pub fn pop(&mut self) -> Option<SpannedToken<'a>> {
-        // TODO: Update signature to reflect the fact this is now infallible
+    #[must_use = "Did you mean skip()? pop() does nothing if the parser is empty..."]
+    pub fn pop(&mut self) -> Option<SpannedToken<'a, L::Token>> {
         match self.buffer.get(self.current_index) {
             Some(&tk) => {
                 self.current_index += 1;
@@ -418,26 +399,23 @@ impl<'src, 'a> Parser<'src, 'a> {
         loop {
             let lexer_span = self.lexer.current_span();
             let tk = match self.lexer.try_next() {
-                Ok(Some(val)) => SpannedToken { span: lexer_span, kind: val },
+                Ok(Some(val)) => SpannedToken { span: lexer_span, kind: val, marker: PhantomData },
                 Ok(None) => {
                     self.eof = true;
                     break
                 },
                 Err(cause) => {
                     let span = cause.span();
-                    let kind = match cause {
-                        LexError::AllocFailed => {
-                            return Err(ParseError::from(AllocError))
-                        },
-                        LexError::InvalidToken { span: _ } => ParseErrorKind::InvalidToken,
-                        LexError::InvalidString(cause) => ParseErrorKind::InvalidString(cause),
+                    if cause.cast_alloc_failed().is_some() {
+                        return Err(ParseError::from(AllocError))
                     };
-                    return Err(ParseError::builder(span.unwrap(), kind).build());
+                    return Err(ParseError::builder(span.unwrap(), ParseErrorKind::Lexer(Box::new(cause)))
+                        .build());
                 },
             };
             self.buffer.push(tk);
             count += 1;
-            if tk.kind == Token::Newline { break }
+            if tk.kind.is_newline() { break }
         }
         if count == 0 && self.eof {
             Ok(None)
@@ -463,7 +441,7 @@ impl<'src, 'a> Parser<'src, 'a> {
     //
     // Utilities
     //
-    pub fn expect(&mut self, expected: Token<'a>)  -> Result<SpannedToken<'a>, ParseError> {
+    pub fn expect(&mut self, expected: L::Token) -> Result<SpannedToken<'a, L::Token>, ParseError> {
         self.expect_if(
             &format_args!("{:?}", expected),
             |actual| **actual == expected
@@ -495,14 +473,14 @@ impl<'src, 'a> Parser<'src, 'a> {
     #[inline]
     pub fn expect_if(
         &mut self, expected: &dyn Display,
-        func: impl FnOnce(&SpannedToken<'a>) -> bool
-    ) -> Result<SpannedToken<'a>, ParseError> {
+        func: impl FnOnce(&SpannedToken<'a, L::Token>) -> bool
+    ) -> Result<SpannedToken<'a, L::Token>, ParseError> {
         self.expect_map(expected, |token| if func(token) { Some(*token) } else { None })
     }
     #[inline]
     pub fn expect_map<T>(
         &mut self, expected: &dyn Display,
-        func: impl FnOnce(&SpannedToken<'a>) -> Option<T>
+        func: impl FnOnce(&SpannedToken<'a, L::Token>) -> Option<T>
     ) -> Result<T, ParseError> {
         if let Some(peeked) = self.peek_tk() {
             if let Some(res) = func(&peeked) {
@@ -533,7 +511,7 @@ impl<'src, 'a> Parser<'src, 'a> {
             .build()
     }
     #[inline]
-    pub fn into_lexer(self) -> PythonLexer<'src, 'a> {
+    pub fn into_lexer(self) -> L {
         self.lexer
     }
 }

@@ -1,23 +1,50 @@
-use errors::ParseError;
+use pathos::errors::ParseError;
 
-use crate::alloc::Allocator;
-use crate::ast::constants::ConstantPool;
-use crate::ast::ident::{Ident, Symbol};
-use crate::ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
-use crate::lexer::Token;
+use pathos::alloc::Allocator;
+use pathos_python_ast::constants::ConstantPool;
+use pathos::ast::{Ident, Symbol};
+use pathos_python_ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
+use pathos::lexer::Token;
+
+use pathos::ast::{Span, Spanned};
+use pathos::errors::ParseErrorKind;
 
 pub use self::expr::ExprPrec;
-use self::parser::{IParser, Parser};
-use crate::ast::{Span, Spanned};
-use crate::parse::errors::ParseErrorKind;
-use crate::ParseMode;
 
-pub mod errors;
-pub mod parser;
+mod lexer;
 mod expr;
 mod stmt;
 
+/// The mode of operation to parse the code in
+///
+/// Indicates the top level item to parse
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseMode {
+    Expression,
+    Module
+}
 
+pub fn parse_text<'a, 'src>(
+    arena: &'a Allocator,
+    text: &'src str,
+    mode: ParseMode,
+    pool: &mut ConstantPool<'a>,
+    symbol_table: &mut SymbolTable<'a>
+) -> Result<ast::tree::PythonAst<'a>, ParseError> {
+    let lexer = PythonLexer::new(
+        arena,
+        std::mem::replace(symbol_table, SymbolTable::new(arena)), // take it from them
+        text
+    );
+    let mut parser = PythonParser::new(arena, Parser::new(arena, lexer)?, pool);
+    let res= parser.parse_top_level(mode).map_err(|err| {
+        err.with_line_numbers(&parser.parser.line_tracker)
+    })?;
+    parser.parser.expect_end_of_input()?;
+    // give back the symbol table we took
+    *symbol_table = parser.parser.into_lexer().into_symbol_table();
+    Ok(res)
+}
 #[derive(Debug)]
 pub struct PythonParser<'src, 'a, 'p> {
     pub arena: &'a Allocator,
