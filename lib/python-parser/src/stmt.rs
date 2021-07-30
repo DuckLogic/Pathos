@@ -174,7 +174,13 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
                 Some(other) if other.aug_assign_op().is_some() => true,
                 _ => false // Just plain invalid
             }
-        }))?;
+        })).map_err(|err| {
+            if matches!(err.expected_msg(), None | Some("an expression")) {
+                err.with_expected_msg("a statement")
+            } else {
+                err
+            }
+        })?;
         // Lets come to a decision
         match self.parser.peek() {
             Some(Token::Newline) => {

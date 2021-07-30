@@ -95,10 +95,13 @@ impl ParseError {
         self
     }
     /// Give additional context on the type of item that was "expected"
-    #[cold]
     pub fn with_expected_msg<T: ToString>(mut self, msg: T) -> Self {
         self.0.expected = Some(msg.to_string());
         self
+    }
+    #[inline]
+    pub fn expected_msg(&self) -> Option<&str> {
+        self.0.expected.as_ref().map(String::as_str)
     }
     pub fn with_actual_msg<T: ToString>(mut self, msg: T) -> Self {
         self.0.actual = Some(msg.to_string());
