@@ -93,7 +93,7 @@ impl Span {
     }
     /// Create a dummy span for debugging purposes
     ///
-    /// **WARNING**: The resulting span is not distinguishable
+    /// **WARNING**: The resulting span is not necessarily distinguishable
     /// from normally created spans
     #[inline]
     pub const fn dummy() -> Span {

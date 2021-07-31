@@ -1,5 +1,5 @@
-use crate::{PythonParser, ArgumentParseOptions};
-use pathos_python_ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind,};
+use crate::{PythonParser, ArgumentParseOptions, AstExt};
+use pathos_python_ast::tree::{Stmt, StmtKind, Alias, ModulePath, RelativeModule, Expr, ExprKind, CallArgs, Keyword};
 use crate::lexer::Token;
 use pathos::errors::ParseError;
 use pathos::ast::{Spanned, Span, AstNode, Position};
@@ -28,6 +28,9 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             },
             Some(Token::Def) => {
                 self.parse_function_def(&[])?
+            },
+            Some(Token::Class) => {
+                self.parse_class_def(&[])?
             },
             Some(Token::Del) => {
                 let start_span = self.parser.expect(Token::Del)?.span.start;
@@ -332,26 +335,8 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
         self.parser.expect(Token::Colon)?;
         self.parser.expect(Token::Newline)?;
         self.parser.next_line()?;
-        self.parser.expect(Token::IncreaseIndent)?;
-        let mut body = Vec::new(self.arena);
-        let mut end: Position;
-        loop {
-            let stmt = self.statement()?;
-            body.push(stmt)?;
-            end = stmt.span().end;
-            self.parser.next_line()?;
-            match self.parser.peek() {
-                Some(Token::DecreaseIndent) => {
-                    self.parser.skip();
-                    break
-                },
-                Some(_) => {
-                    continue
-                }
-                None => return Err(self.parser.unexpected(&"a statement, or decrease in indentation"))
-            }
-        }
-        let span = Span { start, end };
+        let (body_span, body) = self.parse_indented_block()?;
+        let span = Span { start, end: body_span.end };
         let body = &*body.into_slice();
         self.stmt(if is_async {
             StmtKind::AsyncFunctionDef {
@@ -373,8 +358,67 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             }
         })
     }
+    /// Parse a non-empty "block" of statements
+    ///
+    /// The resulting span doesn't include the leading INDENT
+    /// or the trailing DEDENT
+    fn parse_indented_block(&mut self) -> Result<(Span, Vec<'a, Stmt<'a>>), ParseError> {
+        self.parser.expect(Token::IncreaseIndent)?;
+        let start = self.parser.current_span().start;
+        let mut body = Vec::new(self.arena);
+        let mut end: Position;
+        loop {
+            let stmt = self.statement()?;
+            body.push(stmt)?;
+            end = stmt.span().end;
+            self.parser.next_line()?;
+            match self.parser.peek() {
+                Some(Token::DecreaseIndent) => {
+                    self.parser.skip();
+                    break
+                },
+                Some(_) => {
+                    continue
+                }
+                None => return Err(self.parser.unexpected(&"a statement, or a decrease in indentation"))
+            }
+        }
+        Ok((Span { start, end }, body))
+    }
     fn parse_class_def(&mut self, decorators: &'a [Expr<'a>]) -> Result<Stmt<'a>, ParseError> {
-        todo!("{:?}", decorators)
+        let start = self.parser.expect(Token::Class)?.span.start;
+        let name = self.parse_ident()?;
+        let bases: &'a [Expr<'a>];
+        let keywords: &'a [Keyword<'a>];
+        if matches!(self.parser.peek(), Some(Token::OpenParen)) {
+            let start_tk = self.parser.skip();
+            let CallArgs {
+                span: _call_span,
+                args: actual_bases,
+                keyword_varargs,
+                keywords: actual_keywords
+            } = self.parse_args(start_tk)?;
+            if let Some(vararg) = keyword_varargs {
+                return Err(vararg.unexpected()
+                    .with_expected_msg("a list of superclasses")
+                    .with_actual_msg("Illegal keyword varargs"))
+            }
+            bases = actual_bases;
+            keywords = actual_keywords;
+        } else {
+            bases = &[];
+            keywords = &[]
+        }
+        self.parser.expect(Token::Colon)?;
+        self.parser.expect(Token::Newline)?;
+        self.parser.next_line()?;
+        let (block_span, block) = self.parse_indented_block()?;
+        Ok(self.arena.alloc(StmtKind::ClassDef {
+            keywords,
+            body: block.into_slice(),
+            decorator_list: decorators, name,
+            bases, span: Span { start, end: block_span.end },
+        })?)
     }
     fn parse_relative_import_module(&mut self) -> Result<RelativeModule<'a>, ParseError> {
         let mut level = 0u32;

@@ -3,19 +3,20 @@
 use pathos::errors::ParseError;
 
 use pathos::alloc::Allocator;
-use pathos::ast::{Ident, Symbol};
+use pathos::ast::{Ident, Symbol, AstNode};
 use pathos::ast::ident::SymbolTable;
 use pathos::ast::{Span, Spanned};
 use pathos::errors::ParseErrorKind;
-use pathos::parser::{IParser};
+use pathos::parser::{IParser, ParseSeperatedConfig};
 
-use pathos_python_ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst};
+use pathos_python_ast::tree::{ExprContext, Arguments, ArgumentStyle, Arg, PythonAst, CallArgs, Expr, Keyword, ExprKind};
 use pathos_python_ast::constants::ConstantPool;
 
-use crate::lexer::{Token, PythonLexer};
+use crate::lexer::{Token, PythonLexer, SpannedToken};
 
 pub use pathos_python_ast::ExprPrec;
 use pathos::Pathos;
+use std::cell::Cell;
 
 pub mod lexer;
 mod expr;
@@ -364,6 +365,75 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
             type_comment: None // TODO: Type comments
         })
     }
+    pub(crate) fn parse_args(&mut self, start_token: SpannedToken<'a>) -> Result<CallArgs<'a>, ParseError> {
+        assert_eq!(start_token.kind, Token::OpenParen);
+        use pathos::alloc::Vec;
+        let mut positional_args = Vec::new(self.arena);
+        let mut keyword_args = Vec::new(self.arena);
+        let mut keyword_varargs = None;
+        let first_keyword_arg_name: Cell<Option<Symbol<'a>>> = Cell::new(None);
+        let mut iter = self.parse_seperated(
+            Token::Comma, Token::CloseParen,
+            |parser| parser.parse_single_arg(first_keyword_arg_name.get()),
+            ParseSeperatedConfig {
+                allow_multi_line: true,
+                allow_terminator: true
+            }
+        );
+        loop {
+            match iter.next() {
+                Some(Ok(ParsedCallArg::Keyword(keyword))) => {
+                    if first_keyword_arg_name.get().is_none() {
+                        first_keyword_arg_name.set(Some(keyword.name.symbol));
+                    }
+                    keyword_args.push(keyword)?;
+                },
+                Some(Ok(ParsedCallArg::Positional(arg))) => {
+                    positional_args.push(arg)?;
+                },
+                Some(Ok(ParsedCallArg::KeywordVararg(expr))) => {
+                    keyword_varargs = Some(expr);
+                    break;
+                }
+                Some(Err(err)) => return Err(err),
+                None => break
+            }
+        }
+        let start = start_token.span.start;
+        let end = self.parser.expect(Token::CloseParen)?.span.end;
+        Ok(CallArgs {
+            keyword_varargs, span: Span { start, end },
+            args: positional_args.into_slice(),
+            keywords: keyword_args.into_slice()
+        })
+    }
+    fn parse_single_arg(&mut self, first_keyword_arg_name: Option<Symbol<'a>>) -> Result<ParsedCallArg<'a>, ParseError> {
+        match (self.parser.peek(), self.parser.look_ahead(1)) {
+            (Some(Token::Ident(name)), Some(Token::Equals)) => {
+                let name_span = self.parser.current_span();
+                self.parser.skip();
+                self.parser.expect(Token::Equals)?;
+                let value = self.expression()?;
+                Ok(ParsedCallArg::Keyword(Keyword {
+                    name: Ident { span: name_span, symbol: name },
+                    value, span: Span { start: name_span.start, end: value.span().end }
+                }))
+            },
+            (Some(Token::DoubleStar), _) => {
+                self.parser.skip();
+                Ok(ParsedCallArg::KeywordVararg(self.expression()?))
+            },
+            _ => {
+                if let Some(first_keyword_arg_name) = first_keyword_arg_name {
+                    return Err(self.parser.unexpected(&format_args!(
+                        "a keyword arg name, because {} was already a keyword",
+                        first_keyword_arg_name
+                    )));
+                }
+                Ok(ParsedCallArg::Positional(self.expression()?))
+            }
+        }
+    }
 }
 impl<'src, 'a, 'p> IParser<'a> for PythonParser<'src, 'a, 'p> {
     type Token = Token<'a>;
@@ -377,6 +447,11 @@ impl<'src, 'a, 'p> IParser<'a> for PythonParser<'src, 'a, 'p> {
     fn as_parser(&self) -> &Parser<'src, 'a> {
         &self.parser
     }
+}
+enum ParsedCallArg<'a> {
+    Positional(Expr<'a>),
+    Keyword(Keyword<'a>),
+    KeywordVararg(Expr<'a>)
 }
 #[derive(Copy, Clone, Debug)]
 pub struct ArgumentParseOptions {
@@ -408,6 +483,18 @@ impl Default for DefaultArgumentHandling<'_> {
     #[inline]
     fn default() -> Self {
         DefaultArgumentHandling::Standard
+    }
+}
+
+pub trait AstExt: AstNode {
+    fn unexpected(&self) -> ParseError;
+}
+impl AstExt for ExprKind<'_> {
+    #[cold]
+    fn unexpected(&self) -> ParseError {
+        ParseError::builder(self.span(), ParseErrorKind::InvalidExpression)
+            .actual("an illegal expression")
+            .build()
     }
 }
 

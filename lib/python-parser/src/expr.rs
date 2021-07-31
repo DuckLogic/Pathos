@@ -4,14 +4,13 @@
 //!
 //! See also [this (C) pratt parser, implemented in crafting interpreters](http://craftinginterpreters.com/compiling-expressions.html#parsing-prefix-expressions)
 //! See also [this example code](https://github.com/munificent/bantam)
-use std::cell::Cell;
 use std::iter::FusedIterator;
 
 use arrayvec::ArrayVec;
 
 use pathos_python_ast::ExprPrec;
 use pathos::alloc::{Allocator, AllocError, Vec};
-use pathos::ast::{Ident, Span, Spanned, Symbol};
+use pathos::ast::{Ident, Span, Spanned};
 use pathos::errors::{ParseError, ParseErrorKind};
 use pathos::parser::{EndFunc, EndPredicate, ParseSeperated, ParseSeperatedConfig};
 
@@ -357,72 +356,12 @@ impl<'src, 'a, 'p> PythonParser<'src, 'a, 'p> {
     }
     fn parse_call(&mut self, left: Expr<'a>, tk: &SpannedToken<'a>) -> Result<Expr<'a>, ParseError> {
         assert_eq!(tk.kind, Token::OpenParen);
-        let mut positional_args = Vec::new(self.arena);
-        let mut keyword_args = Vec::new(self.arena);
-        let mut keyword_varargs = None;
-        let first_keyword_arg_name: Cell<Option<Symbol<'a>>> = Cell::new(None);
-        let mut iter = self.parse_seperated(
-            Token::Comma, Token::CloseParen,
-            |parser| parser.parse_call_arg(first_keyword_arg_name.get()),
-            ParseSeperatedConfig {
-                allow_multi_line: true,
-                allow_terminator: true
-            }
-        );
-        loop {
-            match iter.next() {
-                Some(Ok(ParsedCallArg::Keyword(keyword))) => {
-                    if first_keyword_arg_name.get().is_none() {
-                        first_keyword_arg_name.set(Some(keyword.name.symbol));
-                    }
-                    keyword_args.push(keyword)?;
-                },
-                Some(Ok(ParsedCallArg::Positional(arg))) => {
-                    positional_args.push(arg)?;
-                },
-                Some(Ok(ParsedCallArg::KeywordVararg(expr))) => {
-                    keyword_varargs = Some(expr);
-                    break;
-                }
-                Some(Err(err)) => return Err(err),
-                None => break
-            }
-        }
-        let start = left.span().start;
-        let end = self.parser.current_span().end;
-        self.parser.expect(Token::CloseParen)?;
+        let args = self.parse_args(*tk)?;
         Ok(&*self.arena.alloc(ExprKind::Call {
-            keyword_varargs, func: left, span: Span { start, end },
-            args: positional_args.into_slice(),
-            keywords: keyword_args.into_slice()
+            span: Span { start: left.span().start, end: args.span.end },
+            func: left,
+            args,
         })?)
-    }
-    fn parse_call_arg(&mut self, first_keyword_arg_name: Option<Symbol<'a>>) -> Result<ParsedCallArg<'a>, ParseError> {
-        match (self.parser.peek(), self.parser.look_ahead(1)) {
-            (Some(Token::Ident(name)), Some(Token::Equals)) => {
-                let name_span = self.parser.current_span();
-                self.parser.skip();
-                self.parser.expect(Token::Equals)?;
-                let value = self.expression()?;
-                Ok(ParsedCallArg::Keyword(Keyword {
-                    name: Ident { span: name_span, symbol: name },
-                    value, span: Span { start: name_span.start, end: value.span().end }
-                }))
-            },
-            (Some(Token::DoubleStar), _) => {
-                self.parser.skip();
-                Ok(ParsedCallArg::KeywordVararg(self.expression()?))
-            },
-            _ => {
-                if let Some(first_keyword_arg_name) = first_keyword_arg_name {
-                    return Err(self.parser.unexpected(&format_args!(
-                        "a keyword arg name, because {} was already a keyword",
-                        first_keyword_arg_name
-                    )));
-                }
-                Ok(ParsedCallArg::Positional(self.expression()?))
-            }
-        }
     }
     fn binary_bool_op(&mut self, left: Expr<'a>, tk: &SpannedToken) -> Result<Expr<'a>, ParseError>{
         let op = BoolOp::from_token(&tk.kind).unwrap();
@@ -1055,11 +994,6 @@ impl<'a> ExprList<'a> {
             }
         }
     }
-}
-enum ParsedCallArg<'a> {
-    Positional(Expr<'a>),
-    Keyword(Keyword<'a>),
-    KeywordVararg(Expr<'a>)
 }
 #[derive(Copy, Clone, Debug)]
 enum CollectionType {

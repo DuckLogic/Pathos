@@ -101,7 +101,7 @@ impl ParseError {
     }
     #[inline]
     pub fn expected_msg(&self) -> Option<&str> {
-        self.0.expected.as_ref().map(String::as_str)
+        self.0.expected.as_deref()
     }
     pub fn with_actual_msg<T: ToString>(mut self, msg: T) -> Self {
         self.0.actual = Some(msg.to_string());

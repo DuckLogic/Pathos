@@ -513,9 +513,8 @@ pub enum ExprKind<'a> {
         #[educe(PartialEq(ignore))]
         span: Span,
         func: Expr<'a>,
-        args: &'a [Expr<'a>],
-        keywords: &'a [Keyword<'a>],
-        keyword_varargs: Option<Expr<'a>>
+        #[serde(flatten)]
+        args: CallArgs<'a>
     },
     FormattedValue {
         /// The span of the source
@@ -635,6 +634,27 @@ impl<'a> Spanned for ExprKind<'a> {
         }
     }
 }
+
+#[cfg_attr(feature = "serialize", serde_as)]
+#[derive(Educe, Debug, Clone)]
+#[educe(PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serialize", derive(Serialize))]
+pub struct CallArgs<'a> {
+    #[educe(Hash(ignore))]
+    #[educe(PartialEq(ignore))]
+    #[serde(skip, default = "Span::dummy")]
+    pub span: Span,
+    pub args: &'a [Expr<'a>],
+    pub keywords: &'a [Keyword<'a>],
+    pub keyword_varargs: Option<Expr<'a>>
+}
+impl<'a> Spanned for CallArgs<'a> {
+    #[inline]
+    fn span(&self) -> Span {
+        self.span
+    }
+}
+impl<'a> AstNode for CallArgs<'a> {}
 
 #[cfg(feature = "serialize")]
 fn serialize_dict_elements_as_pair<'a, S: Serializer>(elements: &'a [(Expr<'a>, Expr<'a>)], ser: S) -> Result<S::Ok, S::Error> {
