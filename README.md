@@ -5,9 +5,7 @@ A straightforward and fast python parser, written in Rust.
 ## Features
 - Recursive decent
    - Predictive parsing (where possible)
-- Typed AST and visitors
-   - AST is constructed through an extensible 'visitor' trait
-   - If you want, you can av    oid constructing an AST and visit the source code directly
+   - Uses a ["Pratt Parser"](https://en.wikipedia.org/wiki/Operator-precedence_parser#Pratt_parsing)
 - Uses the [Logos](https://github.com/maciejhirsz/logos) lexer generator.
    - Unfortunately this means that all the text must be held in memory right now
       - This is a [limitation of Logos](https://github.com/maciejhirsz/logos/issues/159)
