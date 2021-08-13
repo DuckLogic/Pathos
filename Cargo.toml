@@ -4,8 +4,9 @@ description = "A framework for writing recursive decent parsers"
 version = "0.1.0"
 authors = ["Techcable <Techcable@techcable.net>"]
 edition = "2018"
-# Not fit for crates.io
+# Not (yet) fit for crates.io
 publish = false
+license = "MIT"
 
 [features]
 default = []
