@@ -1,18 +1,25 @@
-Pathos: A Python Parser
+Pathos: A Python Parser [DEAD]
 ========================
-A straightforward and fast python parser, written in Rust.
+This was my attempt at writing a recursive-decent parser by hand, for the python source code.
 
-## Features
-- Recursive decent
-   - Predictive parsing (where possible)
-   - Uses a ["Pratt Parser"](https://en.wikipedia.org/wiki/Operator-precedence_parser#Pratt_parsing)
-- Uses the [Logos](https://github.com/maciejhirsz/logos) lexer generator.
-   - Unfortunately this means that all the text must be held in memory right now
-      - This is a [limitation of Logos](https://github.com/maciejhirsz/logos/issues/159)
+It worked fairly well (for a subset of code) but it was large and clunky.
 
-## TODO
-NOTE: The CPython parser doesn't have any of these features, but I'd still like to have them ;)
+I have since decided to try and avoid hand-written parsers ;)
 
-- Safety against stack overflows
-- Buffering input too big to fit in memory
-- Automatic fuzzing w/ American Fuzzy Lop
+### Parser generators
+If you're into parser generators, take a look at:
+1. [parol](https://lib.rs/crates/parol) - LL(k)
+2. [pest](https://pest.rs/) - PEG
+3. [tree-sitter](https://tree-sitter.github.io/tree-sitter/) - LR(1)
+4. [lalrpop](https://lib.rs/crates/lalrpop) LR(1) or LALR(1)
+5. [Antlr](https://www.antlr.org/) - Amazing magic but Rust bindings are experimental :(
+
+
+If you're into parser combinators, take a look at:
+1. [combine](https://lib.rs/crates/combine) - Looks neat
+2. [chumsky](https://github.com/zesterer/chumsky/) - Excellent error recovery and messagses
+2. [nom](https://lib.rs/crates/nom) - Stable
+
+
+### ASTs
+I did some work on [ASDLR](https://www.oilshell.org/blog/2016/12/11.html) ASTs here. That has since moved [to a seperate project](https://github.com/DuckLogic/rust-asdlr).
